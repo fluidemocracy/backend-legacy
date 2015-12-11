@@ -42,7 +42,6 @@ INSERT INTO "policy" (
     "discussion_time",
     "verification_time",
     "voting_time",
-    "issue_quorum_num", "issue_quorum_den",
     "initiative_quorum_num", "initiative_quorum_den",
     "direct_majority_num", "direct_majority_den", "direct_majority_strict",
     "no_reverse_beat_path", "no_multistage_majority"
@@ -50,7 +49,6 @@ INSERT INTO "policy" (
     1,
     'Default policy',
     '0', '1 hour', '1 hour', '1 hour', '1 hour',
-    25, 100,
     20, 100,
     1, 2, TRUE,
     TRUE, FALSE );
@@ -422,8 +420,6 @@ INSERT INTO "policy" (
         "discussion_time",
         "verification_time",
         "voting_time",
-        "issue_quorum_num",
-        "issue_quorum_den",
         "initiative_quorum_num",
         "initiative_quorum_den"
     ) VALUES (
@@ -436,7 +432,6 @@ INSERT INTO "policy" (
         '1 second',
         '1 second',
         '1 second',
-        0, 100,
         0, 100
     ), (
         1,
@@ -448,7 +443,6 @@ INSERT INTO "policy" (
         '2 days',
         '1 second',
         '1 second',
-        0, 100,
         0, 100
     ), (
         1,
@@ -460,7 +454,6 @@ INSERT INTO "policy" (
         '5 minutes',
         '2 days',
         '1 second',
-        0, 100,
         0, 100
     ), (
         1,
@@ -472,7 +465,6 @@ INSERT INTO "policy" (
         '5 minutes',
         '1 second',
         '2 days',
-        0, 100,
         0, 100
     );
 

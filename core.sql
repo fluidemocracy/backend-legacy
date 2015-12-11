@@ -7,7 +7,7 @@
 BEGIN;
 
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('3.1.0', 3, 1, 0))
+  SELECT * FROM (VALUES ('4.0.0', 4, 0, 0))
   AS "subquery"("string", "major", "minor", "revision");
 
 
@@ -366,8 +366,6 @@ CREATE TABLE "policy" (
         "discussion_time"       INTERVAL,
         "verification_time"     INTERVAL,
         "voting_time"           INTERVAL,
-        "issue_quorum_num"      INT4,
-        "issue_quorum_den"      INT4,
         "initiative_quorum_num" INT4            NOT NULL,
         "initiative_quorum_den" INT4            NOT NULL,
         "defeat_strength"     "defeat_strength" NOT NULL DEFAULT 'tuple',
@@ -401,9 +399,6 @@ CREATE TABLE "policy" (
             "discussion_time" ISNULL AND
             "verification_time" ISNULL AND
             "voting_time" ISNULL ) ),
-        CONSTRAINT "issue_quorum_if_and_only_if_not_polling" CHECK (
-          "polling" = ("issue_quorum_num" ISNULL) AND
-          "polling" = ("issue_quorum_den" ISNULL) ),
         CONSTRAINT "no_reverse_beat_path_requires_tuple_defeat_strength" CHECK (
           "defeat_strength" = 'tuple'::"defeat_strength" OR
           "no_reverse_beat_path" = FALSE ) );
@@ -419,8 +414,6 @@ COMMENT ON COLUMN "policy"."max_admission_time"    IS 'Maximum duration of issue
 COMMENT ON COLUMN "policy"."discussion_time"       IS 'Duration of issue state ''discussion''; Regular time until an issue is "half_frozen" after being "accepted"';
 COMMENT ON COLUMN "policy"."verification_time"     IS 'Duration of issue state ''verification''; Regular time until an issue is "fully_frozen" (e.g. entering issue state ''voting'') after being "half_frozen"';
 COMMENT ON COLUMN "policy"."voting_time"           IS 'Duration of issue state ''voting''; Time after an issue is "fully_frozen" but not "closed" (duration of issue state ''voting'')';
-COMMENT ON COLUMN "policy"."issue_quorum_num"      IS   'Numerator of potential supporter quorum to be reached by one initiative of an issue to be "accepted" and enter issue state ''discussion''';
-COMMENT ON COLUMN "policy"."issue_quorum_den"      IS 'Denominator of potential supporter quorum to be reached by one initiative of an issue to be "accepted" and enter issue state ''discussion''';
 COMMENT ON COLUMN "policy"."initiative_quorum_num" IS   'Numerator of satisfied supporter quorum  to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "policy"."initiative_quorum_den" IS 'Denominator of satisfied supporter quorum to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "policy"."defeat_strength"       IS 'How pairwise defeats are measured for the Schulze method; see type "defeat_strength"; ''tuple'' is the recommended setting';
@@ -477,8 +470,9 @@ COMMENT ON TABLE "unit_setting" IS 'Place for frontend to store unit specific se
 
 
 CREATE TABLE "area" (
-        "id"                    SERIAL4         PRIMARY KEY,
+        UNIQUE ("unit_id", "id"),  -- index needed for foreign-key on table "admission_rule_condition"
         "unit_id"               INT4            NOT NULL REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "id"                    SERIAL4         PRIMARY KEY,
         "active"                BOOLEAN         NOT NULL DEFAULT TRUE,
         "name"                  TEXT            NOT NULL,
         "description"           TEXT            NOT NULL DEFAULT '',
@@ -523,6 +517,36 @@ CREATE UNIQUE INDEX "allowed_policy_one_default_per_area_idx" ON "allowed_policy
 COMMENT ON TABLE "allowed_policy" IS 'Selects which policies can be used in each area';
 
 COMMENT ON COLUMN "allowed_policy"."default_policy" IS 'One policy per area can be set as default.';
+
+
+CREATE TABLE "admission_rule" (
+        UNIQUE ("unit_id", "id"),  -- index needed for foreign-key on table "admission_rule_condition"
+        "unit_id"               INT4            NOT NULL REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "id"                    SERIAL4         PRIMARY KEY );
+
+COMMENT ON TABLE "admission_rule" IS 'Groups entries in "admission_rule_condition" to regulate how many issues may pass from ''admission'' to ''discussion'' state in a given time';
+
+
+CREATE TABLE "admission_rule_condition" (
+        "unit_id"               INT4            NOT NULL,
+        "admission_rule_id"     INT4,
+        FOREIGN KEY ("unit_id", "admission_rule_id") REFERENCES "admission_rule" ("unit_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "policy_id"             INT4            REFERENCES "policy" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "area_id"               INT4,
+        FOREIGN KEY ("unit_id", "area_id") REFERENCES "area" ("unit_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "holdoff_time"          INTERVAL        NOT NULL );
+CREATE UNIQUE INDEX "admission_rule_condition_unit_idx" ON "admission_rule_condition" ("admission_rule_id") WHERE "policy_id" ISNULL AND "area_id" ISNULL;
+CREATE UNIQUE INDEX "admission_rule_condition_policy_idx" ON "admission_rule_condition" ("admission_rule_id", "policy_id") WHERE "area_id" ISNULL;
+CREATE UNIQUE INDEX "admission_rule_condition_area_idx" ON "admission_rule_condition" ("admission_rule_id", "area_id") WHERE "policy_id" ISNULL;
+CREATE UNIQUE INDEX "admission_rule_condition_policy_area_idx" ON "admission_rule_condition" ("admission_rule_id", "policy_id", "area_id");
+
+COMMENT ON TABLE "admission_rule_condition" IS 'Regulates how many issues may pass from ''admission'' to ''discussion'' state in a given time; See definition of "issue_for_admission" view for details';
+
+COMMENT ON COLUMN "admission_rule_condition"."unit_id"           IS 'Grouped "admission_rule_condition" rows must have the same "unit_id"';
+COMMENT ON COLUMN "admission_rule_condition"."admission_rule_id" IS 'Grouping several "admission_rule_condition" rows';
+COMMENT ON COLUMN "admission_rule_condition"."policy_id"         IS 'Set to link the condition with a given policy, NULL for any policy in the issue';
+COMMENT ON COLUMN "admission_rule_condition"."area_id"           IS 'Set to link the condition with a given policy, NULL for any area in the issue';
+COMMENT ON COLUMN "admission_rule_condition"."holdoff_time"      IS 'After an issue in the given unit, policy, and/or area has been admitted, the "admission_rule" is disabled for the selected "holdoff_time", e.g. a "holdoff_time" of ''6 hours'' causes four issues per day to be admitted';
 
 
 CREATE TYPE "snapshot_event" AS ENUM ('periodic', 'end_of_admission', 'half_freeze', 'full_freeze');
@@ -620,7 +644,7 @@ COMMENT ON TABLE "issue" IS 'Groups of initiatives';
 COMMENT ON COLUMN "issue"."admin_notice"            IS 'Public notice by admin to explain manual interventions, or to announce corrections';
 COMMENT ON COLUMN "issue"."external_reference"      IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "issue"."phase_finished"          IS 'Set to a value NOTNULL, if the current phase has finished, but calculations are pending; No changes in this issue shall be made by the frontend or API when this value is set';
-COMMENT ON COLUMN "issue"."accepted"                IS 'Point in time, when one initiative of issue reached the "issue_quorum"';
+COMMENT ON COLUMN "issue"."accepted"                IS 'Point in time, when one initiative of issue reached the "issue_quorum" (TODO)';
 COMMENT ON COLUMN "issue"."half_frozen"             IS 'Point in time, when "discussion_time" has elapsed; Frontends must ensure that for half_frozen issues a) initiatives are not revoked, b) no new drafts are created, c) no initiators are added or removed.';
 COMMENT ON COLUMN "issue"."fully_frozen"            IS 'Point in time, when "verification_time" has elapsed and voting has started; Frontends must ensure that for fully_frozen issues additionally to the restrictions for half_frozen issues a) initiatives are not created, b) no interest is created or removed, c) no supporters are added or removed, d) no opinions are created, changed or deleted.';
 COMMENT ON COLUMN "issue"."closed"                  IS 'Point in time, when "max_admission_time" or "voting_time" have elapsed, and issue is no longer active; Frontends must ensure that for closed issues additionally to the restrictions for half_frozen and fully_frozen issues a) no voter is added or removed to/from the direct_voter table, b) no votes are added, modified or removed.';
@@ -1729,6 +1753,25 @@ COMMENT ON TRIGGER "forbid_changes_on_closed_issue" ON "vote"             IS 'En
 --------------------------------------------------------------------
 
 
+CREATE FUNCTION "autofill_unit_id_from_admission_rule_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      IF NEW."unit_id" ISNULL THEN
+        SELECT "unit_id" INTO NEW."unit_id"
+          FROM "admission_rule" WHERE "id" = NEW."admission_rule_id";
+      END IF;
+      RETURN NEW;
+    END;
+  $$;
+
+CREATE TRIGGER "autofill_unit_id" BEFORE INSERT ON "admission_rule_condition"
+  FOR EACH ROW EXECUTE PROCEDURE "autofill_unit_id_from_admission_rule_trigger"();
+
+COMMENT ON FUNCTION "autofill_unit_id_from_admission_rule_trigger"() IS 'Implementation of trigger "autofill_admission_rule_id" on table "admission_rule_entry"';
+COMMENT ON TRIGGER "autofill_unit_id" ON "admission_rule_condition"  IS 'Set "unit_id" field automatically, if NULL';
+
+
 CREATE FUNCTION "autofill_issue_id_trigger"()
   RETURNS TRIGGER
   LANGUAGE 'plpgsql' VOLATILE AS $$
@@ -1897,6 +1940,68 @@ COMMENT ON TRIGGER "autocreate_supporter" ON "opinion" IS 'Opinions can only be 
 ------------------------------------------
 -- Views and helper functions for views --
 ------------------------------------------
+
+
+CREATE VIEW "matching_admission_rule_condition" AS
+  SELECT DISTINCT ON ("issue_id", "admission_rule_condition"."admission_rule_id")
+    "issue"."id" AS "issue_id",
+    "admission_rule_condition".*
+  FROM "admission_rule_condition"
+  JOIN "area" ON "admission_rule_condition"."unit_id" = "area"."unit_id"
+  JOIN "issue" ON "area"."id" = "issue"."area_id"
+  WHERE (
+    "admission_rule_condition"."policy_id" ISNULL OR
+    "admission_rule_condition"."policy_id" = "issue"."policy_id"
+  ) AND (
+    "admission_rule_condition"."area_id" ISNULL OR
+    "admission_rule_condition"."area_id" = "area"."id"
+  )
+  ORDER BY
+    "issue_id",
+    "admission_rule_condition"."admission_rule_id",
+    "admission_rule_condition"."policy_id" ISNULL,
+    "admission_rule_condition"."area_id" ISNULL;
+
+COMMENT ON VIEW "matching_admission_rule_condition" IS 'Selects the most fitting "admission_rule_condition" for a given pair of "issue" and "admission_rule"';
+
+
+CREATE VIEW "applicable_admission_rule" AS
+  SELECT * FROM "admission_rule"
+  WHERE NOT EXISTS (
+    SELECT NULL FROM "issue"
+    JOIN "matching_admission_rule_condition" AS "condition"
+    ON "issue"."id" = "condition"."issue_id"
+    WHERE "condition"."admission_rule_id" = "admission_rule"."id"
+    AND "issue"."accepted" > now() - "condition"."holdoff_time"
+  );
+
+COMMENT ON VIEW "applicable_admission_rule" IS 'Filters "admission_rule"s which are not blocked by a recently admitted issue';
+
+
+CREATE VIEW "issue_for_admission" AS
+  SELECT
+    "issue".*,
+    max("initiative"."supporter_count") AS "max_supporter_count"
+  FROM "issue"
+  JOIN "initiative" ON "issue"."id" = "initiative"."issue_id"
+  JOIN "area" ON "issue"."area_id" = "area"."id"
+  JOIN "admission_rule_condition"
+  ON "admission_rule_condition"."unit_id" = "area"."unit_id"
+  AND (
+    "admission_rule_condition"."policy_id" ISNULL OR
+    "admission_rule_condition"."policy_id" = "issue"."policy_id"
+  )
+  AND (
+    "admission_rule_condition"."area_id" ISNULL OR
+    "admission_rule_condition"."area_id" = "area"."id"
+  )
+  JOIN "applicable_admission_rule"
+  ON "admission_rule_condition"."admission_rule_id" = "applicable_admission_rule"."id"
+  WHERE "issue"."state" = 'admission'::"issue_state"
+  GROUP BY "issue"."id"
+  ORDER BY "max_supporter_count" DESC, "issue"."id";
+
+COMMENT ON VIEW "issue_for_admission" IS 'Issues that are eligible to pass from ''admission'' to ''discussion'' state; needs to be recalculated after admitting the first issue in this view';
 
 
 CREATE VIEW "unit_delegation" AS
@@ -4523,14 +4628,16 @@ CREATE FUNCTION "check_issue"
           FROM "policy" WHERE "id" = "issue_row"."policy_id";
         IF 
           ( now() >=
-            "issue_row"."created" + "issue_row"."min_admission_time" ) AND
-          EXISTS (
-            SELECT NULL FROM "initiative"
-            WHERE "issue_id" = "issue_id_p"
-            AND "supporter_count" > 0
-            AND "supporter_count" * "policy_row"."issue_quorum_den"
-            >= "issue_row"."population" * "policy_row"."issue_quorum_num"
-          )
+            "issue_row"."created" + "issue_row"."min_admission_time" ) --AND
+          -- TODO: implement new mechanism for issue admission
+          --
+          --EXISTS (
+          --  SELECT NULL FROM "initiative"
+          --  WHERE "issue_id" = "issue_id_p"
+          --  AND "supporter_count" > 0
+          --  AND "supporter_count" * "policy_row"."issue_quorum_den"
+          --  >= "issue_row"."population" * "policy_row"."issue_quorum_num"
+          --)
         THEN
           UPDATE "issue" SET
             "state"          = 'discussion',
