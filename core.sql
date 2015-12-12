@@ -366,6 +366,7 @@ CREATE TABLE "policy" (
         "discussion_time"       INTERVAL,
         "verification_time"     INTERVAL,
         "voting_time"           INTERVAL,
+        "issue_quorum"          INT4            NOT NULL,
         "initiative_quorum_num" INT4            NOT NULL,
         "initiative_quorum_den" INT4            NOT NULL,
         "defeat_strength"     "defeat_strength" NOT NULL DEFAULT 'tuple',
@@ -382,6 +383,8 @@ CREATE TABLE "policy" (
         "indirect_majority_non_negative" INT4   NOT NULL DEFAULT 0,
         "no_reverse_beat_path"          BOOLEAN NOT NULL DEFAULT FALSE,
         "no_multistage_majority"        BOOLEAN NOT NULL DEFAULT FALSE,
+        CONSTRAINT "issue_quorum_if_and_only_if_not_polling" CHECK (
+          "polling" = ("issue_quorum" ISNULL) ),
         CONSTRAINT "timing" CHECK (
           ( "polling" = FALSE AND
             "min_admission_time" NOTNULL AND "max_admission_time" NOTNULL AND
@@ -414,7 +417,8 @@ COMMENT ON COLUMN "policy"."max_admission_time"    IS 'Maximum duration of issue
 COMMENT ON COLUMN "policy"."discussion_time"       IS 'Duration of issue state ''discussion''; Regular time until an issue is "half_frozen" after being "accepted"';
 COMMENT ON COLUMN "policy"."verification_time"     IS 'Duration of issue state ''verification''; Regular time until an issue is "fully_frozen" (e.g. entering issue state ''voting'') after being "half_frozen"';
 COMMENT ON COLUMN "policy"."voting_time"           IS 'Duration of issue state ''voting''; Time after an issue is "fully_frozen" but not "closed" (duration of issue state ''voting'')';
-COMMENT ON COLUMN "policy"."initiative_quorum_num" IS   'Numerator of satisfied supporter quorum  to be reached by an initiative to be "admitted" for voting';
+COMMENT ON COLUMN "policy"."issue_quorum"          IS 'Minimum number of supporters needed for one initiative of an issue to allow the issue to pass from ''admission'' to ''discussion'' state (Note: further requirements apply, see tables "admission_rule" and "admission_rule_condition")';
+COMMENT ON COLUMN "policy"."initiative_quorum_num" IS 'Numerator of satisfied supporter quorum  to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "policy"."initiative_quorum_den" IS 'Denominator of satisfied supporter quorum to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "policy"."defeat_strength"       IS 'How pairwise defeats are measured for the Schulze method; see type "defeat_strength"; ''tuple'' is the recommended setting';
 COMMENT ON COLUMN "policy"."tie_breaking"          IS 'Tie-breaker for the Schulze method; see type "tie_breaking"; ''variant1'' or ''variant2'' are recommended';
@@ -4628,16 +4632,12 @@ CREATE FUNCTION "check_issue"
           FROM "policy" WHERE "id" = "issue_row"."policy_id";
         IF 
           ( now() >=
-            "issue_row"."created" + "issue_row"."min_admission_time" ) --AND
+            "issue_row"."created" + "issue_row"."min_admission_time" ) AND
           -- TODO: implement new mechanism for issue admission
-          --
-          --EXISTS (
-          --  SELECT NULL FROM "initiative"
-          --  WHERE "issue_id" = "issue_id_p"
-          --  AND "supporter_count" > 0
-          --  AND "supporter_count" * "policy_row"."issue_quorum_den"
-          --  >= "issue_row"."population" * "policy_row"."issue_quorum_num"
-          --)
+          EXISTS (
+            SELECT NULL FROM "initiative" WHERE "issue_id" = "issue_id_p"
+            AND "supporter_count" >= "policy_row"."issue_quorum"
+          )
         THEN
           UPDATE "issue" SET
             "state"          = 'discussion',
