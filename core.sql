@@ -7,7 +7,7 @@
 BEGIN;
 
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('3.2.0', 3, 2, 0))
+  SELECT * FROM (VALUES ('3.2.1', 3, 2, 1))
   AS "subquery"("string", "major", "minor", "revision");
 
 
@@ -3257,6 +3257,18 @@ CREATE FUNCTION "get_initiatives_for_notification"
         SELECT "id" INTO "last_suggestion_id_v" FROM "suggestion"
           WHERE "suggestion"."initiative_id" = "result_row"."initiative_id"
           ORDER BY "id" DESC LIMIT 1;
+        /* compatibility with PostgreSQL 9.1 */
+        DELETE FROM "notification_initiative_sent"
+          WHERE "member_id" = "recipient_id_p"
+          AND "initiative_id" = "result_row"."initiative_id";
+        INSERT INTO "notification_initiative_sent"
+          ("member_id", "initiative_id", "last_draft_id", "last_suggestion_id")
+          VALUES (
+            "recipient_id_p",
+            "result_row"."initiative_id",
+            "last_draft_id_v",
+            "last_suggestion_id_v" );
+        /* TODO: use alternative code below, requires PostgreSQL 9.5 or higher
         INSERT INTO "notification_initiative_sent"
           ("member_id", "initiative_id", "last_draft_id", "last_suggestion_id")
           VALUES (
@@ -3265,16 +3277,9 @@ CREATE FUNCTION "get_initiatives_for_notification"
             "last_draft_id_v",
             "last_suggestion_id_v" )
           ON CONFLICT ("member_id", "initiative_id") DO UPDATE SET
-            "last_draft_id" = CASE
-              WHEN "notification_initiative_sent"."last_draft_id" > "last_draft_id_v"
-              THEN "notification_initiative_sent"."last_draft_id"
-              ELSE "last_draft_id_v"
-            END,
-            "last_suggestion_id" = CASE
-              WHEN "notification_initiative_sent"."last_suggestion_id" > "last_suggestion_id_v"
-              THEN "notification_initiative_sent"."last_suggestion_id"
-              ELSE "last_suggestion_id_v"
-            END;
+            "last_draft_id" = "last_draft_id_v",
+            "last_suggestion_id" = "last_suggestion_id_v";
+        */
         RETURN NEXT "result_row";
       END LOOP;
       DELETE FROM "notification_initiative_sent"
