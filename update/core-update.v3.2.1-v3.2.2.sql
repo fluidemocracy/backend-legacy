@@ -4,6 +4,18 @@ CREATE OR REPLACE VIEW "liquid_feedback_version" AS
   SELECT * FROM (VALUES ('3.2.2', 3, 2, 2))
   AS "subquery"("string", "major", "minor", "revision");
 
+UPDATE "member" SET
+  "disable_notifications"    = TRUE,
+  "notification_counter"     = DEFAULT,
+  "notification_sample_size" = 0,
+  "notification_dow"         = NULL,
+  "notification_hour"        = NULL
+  WHERE "last_login" ISNULL
+  AND "login" ISNULL
+  AND "authority_login" ISNULL
+  AND "locked" = TRUE
+  AND "active" = FALSE;
+
 CREATE OR REPLACE FUNCTION "featured_initiative"
   ( "recipient_id_p" "member"."id"%TYPE,
     "area_id_p"      "area"."id"%TYPE )
