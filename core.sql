@@ -2710,7 +2710,8 @@ CREATE VIEW "scheduled_notification_to_send" AS
         "notification_dow",
         "notification_hour"
       FROM "member"
-      WHERE "disable_notifications" = FALSE
+      WHERE "locked" = FALSE
+      AND "disable_notifications" = FALSE
       AND "notification_hour" NOTNULL
     ) AS "subquery1"
   ) AS "subquery2"

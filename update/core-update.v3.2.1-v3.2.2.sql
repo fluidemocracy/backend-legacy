@@ -98,4 +98,43 @@ CREATE OR REPLACE FUNCTION "featured_initiative"
     END;
   $$;
 
+CREATE OR REPLACE VIEW "scheduled_notification_to_send" AS
+  SELECT * FROM (
+    SELECT
+      "id" AS "recipient_id",
+      now() - CASE WHEN "notification_dow" ISNULL THEN
+        ( "notification_sent"::DATE + CASE
+          WHEN EXTRACT(HOUR FROM "notification_sent") < "notification_hour"
+          THEN 0 ELSE 1 END
+        )::TIMESTAMP + '1 hour'::INTERVAL * "notification_hour"
+      ELSE
+        ( "notification_sent"::DATE +
+          ( 7 + "notification_dow" -
+            EXTRACT(DOW FROM
+              ( "notification_sent"::DATE + CASE
+                WHEN EXTRACT(HOUR FROM "notification_sent") < "notification_hour"
+                THEN 0 ELSE 1 END
+              )::TIMESTAMP + '1 hour'::INTERVAL * "notification_hour"
+            )::INTEGER
+          ) % 7 +
+          CASE
+            WHEN EXTRACT(HOUR FROM "notification_sent") < "notification_hour"
+            THEN 0 ELSE 1
+          END
+        )::TIMESTAMP + '1 hour'::INTERVAL * "notification_hour"
+      END AS "pending"
+    FROM (
+      SELECT
+        "id",
+        COALESCE("notification_sent", "activated") AS "notification_sent",
+        "notification_dow",
+        "notification_hour"
+      FROM "member"
+      WHERE "locked" = FALSE
+      AND "disable_notifications" = FALSE
+      AND "notification_hour" NOTNULL
+    ) AS "subquery1"
+  ) AS "subquery2"
+  WHERE "pending" > '0'::INTERVAL;
+
 COMMIT;
