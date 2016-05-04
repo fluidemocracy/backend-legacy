@@ -7,7 +7,7 @@
 BEGIN;
 
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('3.2.1', 3, 2, 1))
+  SELECT * FROM (VALUES ('3.2.2', 3, 2, 2))
   AS "subquery"("string", "major", "minor", "revision");
 
 
@@ -2451,6 +2451,9 @@ CREATE FUNCTION "featured_initiative"
       SELECT "notification_counter", "notification_sample_size"
         INTO "counter_v", "sample_size_v"
         FROM "member" WHERE "id" = "recipient_id_p";
+      IF COALESCE("sample_size_v" <= 0, TRUE) THEN
+        RETURN;
+      END IF;
       "initiative_id_ary" := '{}';
       LOOP
         "match_v" := FALSE;
