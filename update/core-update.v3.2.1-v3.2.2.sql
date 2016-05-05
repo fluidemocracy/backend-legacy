@@ -16,6 +16,18 @@ UPDATE "member" SET
   AND "locked" = TRUE
   AND "active" = FALSE;
 
+CREATE VIEW "member_eligible_to_be_notified" AS
+  SELECT * FROM "member"
+  WHERE "activated" NOTNULL AND "locked" = FALSE;
+
+COMMENT ON VIEW "member_eligible_to_be_notified" IS 'Filtered "member" table containing only activated and non-locked members (used as helper view for "member_to_notify" and "newsletter_to_send")';
+
+CREATE VIEW "member_to_notify" AS
+  SELECT * FROM "member_eligible_to_be_notified"
+  WHERE "disable_notifications" = FALSE;
+
+COMMENT ON VIEW "member_to_notify" IS 'Filtered "member" table containing only members that are eligible to and wish to receive notifications; NOTE: "notify_email" may still be NULL and might need to be checked by frontend (this allows other means of messaging)';
+
 CREATE OR REPLACE FUNCTION "featured_initiative"
   ( "recipient_id_p" "member"."id"%TYPE,
     "area_id_p"      "area"."id"%TYPE )
@@ -141,13 +153,34 @@ CREATE OR REPLACE VIEW "scheduled_notification_to_send" AS
         COALESCE("notification_sent", "activated") AS "notification_sent",
         "notification_dow",
         "notification_hour"
-      FROM "member"
-      WHERE "locked" = FALSE
-      AND "disable_notifications" = FALSE
-      AND "notification_hour" NOTNULL
+      FROM "member_to_notify"
+      WHERE "notification_hour" NOTNULL
     ) AS "subquery1"
   ) AS "subquery2"
   WHERE "pending" > '0'::INTERVAL;
+
+CREATE OR REPLACE VIEW "newsletter_to_send" AS
+  SELECT
+    "member"."id" AS "recipient_id",
+    "newsletter"."id" AS "newsletter_id",
+    "newsletter"."published"
+  FROM "newsletter" CROSS JOIN "member_eligible_to_be_notified" AS "member"
+  LEFT JOIN "privilege" ON
+    "privilege"."member_id" = "member"."id" AND
+    "privilege"."unit_id" = "newsletter"."unit_id" AND
+    "privilege"."voting_right" = TRUE
+  LEFT JOIN "subscription" ON
+    "subscription"."member_id" = "member"."id" AND
+    "subscription"."unit_id" = "newsletter"."unit_id"
+  WHERE "newsletter"."published" <= now()
+  AND "newsletter"."sent" ISNULL
+  AND (
+    "member"."disable_notifications" = FALSE OR
+    "newsletter"."include_all_members" = TRUE )
+  AND (
+    "newsletter"."unit_id" ISNULL OR
+    "privilege"."member_id" NOTNULL OR
+    "subscription"."member_id" NOTNULL );
 
 CREATE OR REPLACE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
   RETURNS VOID
