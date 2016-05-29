@@ -51,7 +51,7 @@ INSERT INTO "policy" (
     'Default policy',
     '0', '1 hour', '1 hour', '1 hour', '1 hour',
     3,
-    20, 100,
+    30, 100,
     1, 2, TRUE,
     TRUE, FALSE );
 
@@ -59,7 +59,6 @@ CREATE FUNCTION "time_warp"() RETURNS VOID
   LANGUAGE 'plpgsql' VOLATILE AS $$
     BEGIN
       UPDATE "issue" SET
-        "snapshot"     = "snapshot"     - '1 hour 1 minute'::INTERVAL,
         "created"      = "created"      - '1 hour 1 minute'::INTERVAL,
         "accepted"     = "accepted"     - '1 hour 1 minute'::INTERVAL,
         "half_frozen"  = "half_frozen"  - '1 hour 1 minute'::INTERVAL,
@@ -70,6 +69,11 @@ CREATE FUNCTION "time_warp"() RETURNS VOID
   $$;
 
 INSERT INTO "unit" ("name") VALUES ('Main');
+
+INSERT INTO "admission_rule" ("unit_id", "name") VALUES (1, 'General admission rule');
+
+INSERT INTO "admission_rule_condition" ("admission_rule_id", "unit_id", "holdoff_time")
+  VALUES (1, 1, '0 seconds');
 
 INSERT INTO "privilege" ("unit_id", "member_id", "voting_right")
   SELECT 1 AS "unit_id", "id" AS "member_id", TRUE AS "voting_right"
@@ -83,24 +87,6 @@ INSERT INTO "area" ("unit_id", "name") VALUES
 
 INSERT INTO "allowed_policy" ("area_id", "policy_id", "default_policy")
   VALUES (1, 1, TRUE), (2, 1, TRUE), (3, 1, TRUE), (4, 1, TRUE);
-
-INSERT INTO "membership" ("area_id", "member_id") VALUES
-  (1,  9),
-  (1, 19),
-  (2,  9),
-  (2, 10),
-  (2, 17),
-  (3,  9),
-  (3, 11),
-  (3, 12),
-  (3, 14),
-  (3, 20),
-  (3, 21),
-  (3, 22),
-  (4,  6),
-  (4,  9),
-  (4, 13),
-  (4, 22);
 
 -- global delegations
 INSERT INTO "delegation"

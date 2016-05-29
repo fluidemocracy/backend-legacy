@@ -1,7 +1,4 @@
 
--- Execute the following command manually for PostgreSQL prior version 9.0:
--- CREATE LANGUAGE plpgsql;
-
 -- NOTE: In PostgreSQL every UNIQUE constraint implies creation of an index
 
 BEGIN;
@@ -46,6 +43,586 @@ COMMENT ON FUNCTION "highlight"
   ( "body_p"       TEXT,
     "query_text_p" TEXT )
   IS 'For a given a user query this function encapsulates all matches with asterisks. Asterisks and backslashes being already present are preceeded with one extra backslash.';
+
+
+
+-----------------------------------------------
+-- spatial indexing and distance calculation --
+-----------------------------------------------
+
+
+CREATE DOMAIN "geoindex" AS point CHECK (VALUE <@ '((-1,-1),(1,1))'::box);
+
+COMMENT ON DOMAIN "geoindex" IS 'Data type used for indexing geographical coordinates';
+
+
+CREATE FUNCTION "geoindex"
+  ( "latitude_p"  FLOAT,
+    "longitude_p" FLOAT )
+  RETURNS "geoindex"
+  LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT point("latitude_p" / 90, "longitude_p" / 180)::"geoindex"
+  $$;
+
+COMMENT ON FUNCTION "geoindex"
+  (FLOAT, FLOAT)
+  IS 'Transforms coordinates given as latitude (from -90 to 90) and logitude (from -180 to 180) into a data type suitable for a quadtree index';
+
+
+CREATE TYPE "geosearch" AS (
+        "lat"           FLOAT,
+        "lon"           FLOAT,
+        "c3"            FLOAT,
+        "c2"            FLOAT,
+        "c1"            FLOAT,
+        "c0"            FLOAT,
+        "dist"          FLOAT,
+        "bbox1"         BOX,
+        "bbox2"         BOX );
+
+COMMENT ON TYPE "geosearch" IS 'Structure returned by function "geosearch" holding one or two bounding boxes ("bbox1" and optionally "bbox2") for index lookup as well as the starting point (i.e. center point given by "lat" and "lon") and coefficients ("c3" through "c0") for distance approximation';
+
+COMMENT ON COLUMN "geosearch"."lat"   IS 'Latitude of center of search area';
+COMMENT ON COLUMN "geosearch"."lon"   IS 'Longitude of center of search area';
+COMMENT ON COLUMN "geosearch"."c3"    IS 'Coefficient for distance calculation';
+COMMENT ON COLUMN "geosearch"."c2"    IS 'Coefficient for distance calculation';
+COMMENT ON COLUMN "geosearch"."c1"    IS 'Coefficient for distance calculation';
+COMMENT ON COLUMN "geosearch"."c0"    IS 'Coefficient for distance calculation';
+COMMENT ON COLUMN "geosearch"."bbox1" IS 'Bounding box suitable for use with output of "geoindex" function';
+COMMENT ON COLUMN "geosearch"."bbox2" IS 'Second bounding box (see column "bbox1") set if search crosses the 180th meridian';
+
+
+CREATE FUNCTION "geosearch"
+  ( "latitude_p"  FLOAT,
+    "longitude_p" FLOAT )
+  RETURNS "geosearch"
+  LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+    DECLARE
+      -- constants:
+      -- (with a = radius at equator, and b = radius at pole)
+      "degrad"   FLOAT := 0.017453292519943295;    -- pi / 180
+      "degrad2"  FLOAT := 0.00030461741978670857;  -- (pi / 180)^2
+      "a2"       FLOAT := 40680631590769;          -- a^2
+      "eps2"     FLOAT := 0.006694379990141316;    -- (a^2 - b^2) / a^2
+      "subeps2"  FLOAT := 0.9933056200098587;      -- 1 - "eps2"   
+      "subeps22" FLOAT := 0.9866560547431698;      -- (1 - "eps2")^2
+      -- latitude in radians:
+      "phi0rad"  FLOAT := "degrad" * "latitude_p";
+      -- helper variables:
+      "sinp0"    FLOAT;  -- sin("phi0rad")
+      "cosp0"    FLOAT;  -- cos("phi0rad")
+      "sinp02"   FLOAT;  -- sin("phi0rad")^2
+      "e2sinp02" FLOAT;  -- "eps2" * sin("phi0rad")^2
+      "subsin"   FLOAT;  -- 1 - sin("phi0rad")^2
+      "subse"    FLOAT;  -- 1 - "eps2" * sin("phi0rad")^2
+      "subse2"   FLOAT;  -- ("subse")^2
+      "t20"      FLOAT;  -- taylor coefficient for (delta latitude)^2
+      "t02"      FLOAT;  -- taylor coefficient for (delta longitude)^2 / "t20"
+      "t12"      FLOAT;  -- taylor coefficient for (d lat)^1*(d lon)^2 / "t20"
+      "t22"      FLOAT;  -- taylor coefficient for (d lat)^2*(d lon)^2 / "t20"
+      -- result:
+      "res"      "geosearch";
+    BEGIN
+      PERFORM "geoindex"("latitude_p", "longitude_p");  -- check bounds
+      "sinp0"    := sin("phi0rad");
+      "cosp0"    := cos("phi0rad");
+      "sinp02"   := "sinp0" * "sinp0";
+      "e2sinp02" := "eps2" * "sinp02";
+      "subsin"   := 1 - "sinp02";
+      "subse"    := 1 - "e2sinp02";
+      "subse2"   := "subse" * "subse";
+      "t20"      := "a2" * "subeps22" / ("subse" * "subse2");
+      "t02"      := "subsin" * "subse2" / "subeps22";
+      "t12"      := -"sinp0" * "cosp0" * "subse" / "subeps2";
+      "t22"      := -"subsin" * (0.5+"e2sinp02") / "subeps2";
+      "res"."lat" := "latitude_p";
+      "res"."lon" := "longitude_p";
+      "res"."c3"  := "degrad2" * "t20";
+      "res"."c2"  := "degrad2" * "t22";
+      "res"."c1"  := "degrad" * ("t12" - 2 * "t22" * "phi0rad");
+      "res"."c0"  := ("t22" * "phi0rad" - "t12") * "phi0rad" + "t02";
+      "res"."dist"  := 'Infinity'::FLOAT;
+      "res"."bbox1" := box(point(1, 1), point(-1, -1));
+      "res"."bbox2" := NULL;
+      RETURN "res";
+    END;
+  $$;
+
+COMMENT ON FUNCTION "geosearch"
+  ( FLOAT, FLOAT )
+  IS 'Takes latitude and longitude (in degrees), and returns a "geosearch" structure suitable for distance calculation; NOTE: use function with same name but three arguments, i.e. "geosearch"(FLOAT, FLOAT, FLOAT), for searches with limited radius';
+
+
+CREATE FUNCTION "geosearch"
+  ( "latitude_p"  FLOAT,
+    "longitude_p" FLOAT,
+    "radius_p"    FLOAT )
+  RETURNS "geosearch"
+  LANGUAGE plpgsql IMMUTABLE AS $$
+    DECLARE
+      -- constants:
+      "philimit" FLOAT := 84;    -- maximum latitude (needs to be less than 90)
+      "margin"   FLOAT := 1.0001;  -- slightly increase search area
+      -- NOTE: search area is increased by "margin", search radius gets
+      --       increased by sqrt("margin"); choose a value > 1.0 to avoid
+      --       floating point errors
+      "fixzero"  FLOAT := 0.0001;  -- small value > 0 to fix singularity
+      -- result:
+      "res"      "geosearch";
+      -- helper variables:
+      "rc3mar"   FLOAT;  -- ("radius_p")^2 / "c3", multiplied with "margin"
+      "subc02"   FLOAT;  -- 2 * ("c0" - "c2" * "rc3mar")
+      "b4"       FLOAT;  -- ("c2")^2
+      "b3"       FLOAT;  -- 2 * "c1" * "c2"
+      "b2"       FLOAT;  -- ("c1")^2 + "subc02" * "c2"
+      "b1"       FLOAT;  -- "subc02" * "c1"
+      "b0"       FLOAT;  -- ("c2")^2                   * ("rc3mar")^2 +
+                         -- 2 * "c0" * "c2" - ("c1")^2 * ("rc3mar")^1 +
+                         -- ("c0")^2                   * ("rc3mar")^0
+      "sqrtval"  FLOAT;  -- "b4" * ("latitude_p")^4 +
+                         -- "b3" * ("latitude_p")^3 +
+                         -- "b2" * ("latitude_p")^2 +
+                         -- "b1" * ("latitude_p")^1 +
+                         -- "b0" * ("latitude_p")^0
+      "phic"     FLOAT;  -- ( "c2" * (("latitude_p")^2 - "rc3mar") - "c0"
+                         --   + sqrt("sqrtval")
+                         -- ) / ( 2 * "c2" * "latitude_p" + "c1" )
+      "dlat"     FLOAT;  -- delta latitude in degrees = sqrt("rc3mar")
+      "dlon2"    FLOAT;  -- square of delta longitude
+      "dlon"     FLOAT;  -- delta longitude in degrees =
+                         -- sqrt(
+                         --   ( "rc3mar" - ("phic" - "latitude_p")^2 ) /
+                         --   ( "c2" * ("phic")^2 +
+                         --     "c1" * ("phic")^1 +
+                         --     "c0" )
+                         -- )
+      "lat_min"  FLOAT;
+      "lat_max"  FLOAT;
+      "lon_min"  FLOAT;
+      "lon_max"  FLOAT;
+    BEGIN
+      "res" := "geosearch"("latitude_p", "longitude_p");
+      IF "res" ISNULL THEN RETURN NULL; END IF;
+      IF "radius_p" ISNULL OR "radius_p" = 'Infinity'::FLOAT THEN
+        RETURN "res";
+      END IF;
+      "res"."dist" := "radius_p";
+      "rc3mar"  := "margin" * "radius_p" * "radius_p" / "res"."c3";
+      "subc02"  := 2 * ("res"."c0" - "res"."c2" * "rc3mar");
+      "b4"      := "res"."c2" * "res"."c2";
+      "b3"      := 2 * "res"."c1" * "res"."c2";
+      "b2"      := "res"."c1" * "res"."c1" + "subc02" * "res"."c2";
+      "b1"      := "subc02" * "res"."c1";
+      "b0"      := ( "b4" * "rc3mar" +
+                     2 * "res"."c0" * "res"."c2" - "res"."c1" * "res"."c1"
+                   ) * "rc3mar" + "res"."c0" * "res"."c0";
+      "sqrtval" := ( ( ( ( "b4"
+                         ) * "latitude_p" + "b3"
+                       ) * "latitude_p" + "b2"
+                     ) * "latitude_p" + "b1"
+                   ) * "latitude_p" + "b0";
+      IF "sqrtval" < 0 THEN
+        IF "latitude_p" >= 0 THEN "phic" := "philimit";
+        ELSE "phic" := -"philimit"; END IF;
+      ELSE
+        IF abs("latitude_p") <= "fixzero" THEN
+          "phic" := "latitude_p";
+        ELSE
+          "phic" := (
+            "res"."c2" * ("latitude_p" * "latitude_p" - "rc3mar")
+            - "res"."c0" + sqrt("sqrtval")
+          ) / (
+            2 * "res"."c2" * "latitude_p" + "res"."c1"
+          );
+          IF "phic" > "philimit" THEN "phic" := "philimit";
+          ELSIF "phic" < -"philimit" THEN "phic" := -"philimit"; END IF;
+        END IF;
+      END IF;
+      "dlat" := sqrt("rc3mar");
+      "dlon2" := (
+        ( "rc3mar" - ("phic" - "latitude_p")^2 ) /
+        ( ( "res"."c2" * "phic" + "res"."c1" ) * "phic" + "res"."c0" )
+      );
+      IF "dlon2" > 0 THEN "dlon" := sqrt("dlon2");
+      ELSE "dlon" := 0; END IF;
+      "lat_min" := "latitude_p" - "dlat";
+      "lat_max" := "latitude_p" + "dlat";
+      IF "lat_min" < -90 THEN "lat_min" := -90; END IF;
+      IF "lat_max" >  90 THEN "lat_max" :=  90; END IF;
+      "lon_min" := "longitude_p" - "dlon";
+      "lon_max" := "longitude_p" + "dlon";
+      IF "lon_min" < -180 THEN
+        IF "lon_max" > 180 THEN
+          "res"."bbox1" := box(
+            "geoindex"("lat_min", -180),
+            "geoindex"("lat_max", 180) );
+          "res"."bbox2" := NULL;
+        ELSE
+          "res"."bbox1" := box(
+            "geoindex"("lat_min", -180),
+            "geoindex"("lat_max", "lon_max") );
+          "res"."bbox2" := box(
+            "geoindex"("lat_min", "lon_min" + 360),
+            "geoindex"("lat_max", 180) );
+        END IF;
+      ELSIF "lon_max" > 180 THEN
+        "res"."bbox1" := box(
+          "geoindex"("lat_min", "lon_min"),
+          "geoindex"("lat_max", 180) );
+        "res"."bbox2" := box(
+          "geoindex"("lat_min", -180),
+          "geoindex"("lat_max", "lon_max" - 360) );
+      ELSE
+        "res"."bbox1" := box(
+          "geoindex"("lat_min", "lon_min"),
+          "geoindex"("lat_max", "lon_max") );
+        "res"."bbox2" := NULL;
+      END IF;
+      RETURN "res";
+    END;
+  $$;
+
+COMMENT ON FUNCTION "geosearch"
+  ( FLOAT, FLOAT, FLOAT )
+  IS 'Takes latitude, longitude (both in degrees), and a radius (in meters), and returns a "geoindex" structure suitable for searching and distance calculation';
+
+
+CREATE FUNCTION "geodist"
+  ( "geosearch_p" "geosearch",
+    "latitude_p"  FLOAT,
+    "longitude_p" FLOAT )
+  RETURNS FLOAT
+  LANGUAGE sql IMMUTABLE AS $$
+    SELECT sqrt(
+      "geosearch_p"."c3" * (
+        ("latitude_p" - "geosearch_p"."lat")^2 +
+        ( ( "geosearch_p"."c2" * "latitude_p" + "geosearch_p"."c1" )
+          * "latitude_p" + "geosearch_p"."c0" ) *
+        ( "longitude_p" +
+          CASE WHEN "longitude_p" - "geosearch_p"."lon" > 180
+          THEN -360 ELSE
+            CASE WHEN "longitude_p" - "geosearch_p"."lon" < -180
+            THEN 360
+            ELSE 0 END
+          END - "geosearch_p"."lon"
+        )^2
+      )
+    )
+  $$;
+
+COMMENT ON FUNCTION "geodist"
+  ( "geosearch", FLOAT, FLOAT )
+  IS 'Takes a "geosearch" structure as well as geographical coordinates in degrees and returns the distance on earth in meters';
+
+
+/* Usage of spatial indexing and distance calculation functions for points:
+
+-- create table containing geographical coordinates in degrees:
+CREATE TABLE "t1" (
+        "id"            SERIAL4         PRIMARY KEY,
+        "latitude"      NUMERIC         NOT NULL,
+        "longitude"     NUMERIC         NOT NULL );
+
+-- create an SP-GiST index (with default quad_point_ops operator class):
+CREATE INDEX "t1_geoindex" ON "t1" USING spgist (("geoindex"("latitude", "longitude")));
+
+-- return results within 10,000 meters of Brandenburg Gate:
+SELECT "t1".*, "distance"
+  FROM "t1"
+  CROSS JOIN "geosearch"(52.5162746, 13.377704, 10000)
+  CROSS JOIN LATERAL "geodist"("geosearch", "latitude", "longitude") AS "distance"
+  WHERE (
+    "geoindex"("latitude", "longitude") <@ "geosearch"."bbox1" OR
+    "geoindex"("latitude", "longitude") <@ "geosearch"."bbox2" )
+  AND "distance" <= "geosearch"."dist";
+
+*/
+
+
+CREATE FUNCTION "polyindex"
+  ( "point_p" POINT )
+  RETURNS POLYGON
+  LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT "point_p"::TEXT::POLYGON;
+  $$;
+
+COMMENT ON FUNCTION "polyindex"(POINT) IS 'Converts a point (with latitude in degrees as first value and longitude in degrees as second value) into a polygon suitable for GiST poly_ops indexing'; 
+
+
+CREATE FUNCTION "polyindex"
+  ( "latitude_p"  FLOAT,
+    "longitude_p" FLOAT )
+  RETURNS POLYGON
+  LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT "polyindex"(point("latitude_p", "longitude_p"))
+  $$;
+
+COMMENT ON FUNCTION "polyindex"(POINT) IS 'Converts a point given as latitude and longitude in degrees into a polygon suitable for GiST poly_ops indexing'; 
+
+
+CREATE FUNCTION "polyindex"
+  ( "polygon_p" POLYGON )
+  RETURNS POLYGON
+  LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT "polygon_p"
+  $$;
+
+COMMENT ON FUNCTION "polyindex"(POLYGON) IS 'Does nothing but returning the polygon unchanged (for GiST poly_ops indexing)'; 
+
+
+CREATE FUNCTION "polyindex"
+  ( "box_p" BOX )
+  RETURNS POLYGON
+  LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT "box_p"::POLYGON
+  $$;
+
+COMMENT ON FUNCTION "polyindex"(POINT) IS 'Converts a box (with latitude in degrees as first value and longitude in degrees as second value in each point) into a polygon suitable for GiST poly_ops indexing';
+
+
+CREATE FUNCTION "polyindex"
+  ( "path_p" PATH )
+  RETURNS POLYGON
+  LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+    DECLARE
+      "match_v"  TEXT[];
+      "points_v" TEXT[];
+      "idx1"     INTEGER;
+      "idx2"     INTEGER;
+    BEGIN
+      IF isclosed("path_p") THEN
+        RETURN "path_p"::POLYGON;
+      ELSE
+        "points_v" := '{}';
+        "idx1" := 0;
+        FOR "match_v" IN
+          SELECT regexp_matches("path_p"::TEXT, E'\\(([^()]*)\\)', 'g')
+        LOOP
+          "idx1" := "idx1" + 1;
+          "points_v"["idx1"] := "match_v"[1];
+        END LOOP;
+        "idx2" := "idx1";
+        LOOP
+          EXIT WHEN "idx1" < 3;
+          "idx1" := "idx1" - 1;
+          "idx2" := "idx2" + 1;
+          "points_v"["idx2"] := "points_v"["idx1"];
+        END LOOP;
+        RETURN array_to_string("points_v", ',')::POLYGON;
+      END IF;
+    END;
+  $$;
+
+COMMENT ON FUNCTION "polyindex"(POINT) IS 'Converts a path (with latitude in degrees as first value and longitude in degrees as second value in each point) into a polygon suitable for GiST poly_ops indexing; NOTE: closed PATHs where isclosed(path)=TRUE represent filled polygons, use an open PATH with the last point equal to the first point (e.g. "[1,1,3,4,6,6,1,1]") for a non-filled structure';
+
+
+CREATE FUNCTION "polyindex"
+  ( "lseg_p" LSEG )
+  RETURNS POLYGON
+  LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT "polyindex"("lseg_p"::TEXT::PATH)
+  $$;
+
+COMMENT ON FUNCTION "polyindex"(POINT) IS 'Converts a line segment (with latitude in degrees as first value and longitude in degrees as second value in each point) into a polygon suitable for GiST poly_ops indexing';
+
+
+CREATE FUNCTION "geoshift180"
+  ( "point_p" POINT )
+  RETURNS POINT
+  LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT CASE WHEN "point_p" <^ '0,0'::POINT THEN
+      "point_p" + '0,360'::POINT
+    ELSE
+      "point_p" - '0,360'::POINT
+    END 
+  $$;
+
+COMMENT ON FUNCTION "geoshift180"(POINT) IS 'Returns a point (latitude and longitude in degrees) with its longitude translated by 360 degress to allow for searches crossing the 180th meridian';
+
+
+CREATE FUNCTION "geoshift180"
+  ( "polygon_p" POLYGON )
+  RETURNS POLYGON
+  LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT CASE WHEN center("polygon_p"::CIRCLE) <^ '0,0'::POINT THEN
+      ("polygon_p"::PATH + '0,360'::POINT)::POLYGON
+    ELSE
+      ("polygon_p"::PATH - '0,360'::POINT)::POLYGON
+    END 
+  $$;
+
+COMMENT ON FUNCTION "geoshift180"(POLYGON) IS 'Returns a polygon (latitude and longitude in degrees) with its longitude translated by 360 degress to allow for searches crossing the 180th meridian';
+
+
+CREATE FUNCTION "polysearch"
+  ( "geosearch_p" "geosearch",
+    "steps_p"     INTEGER = 24 )
+  RETURNS POLYGON
+  LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+    DECLARE
+      "philimit"  FLOAT := 84;   -- maximum latitude (needs to be less than 90)
+      "halfsteps" INTEGER;
+      "step"      INTEGER := 0;
+      "angle"     FLOAT;
+      "dlat"      FLOAT := "geosearch_p"."dist" / sqrt("geosearch_p"."c3");
+      "lat"       FLOAT;
+      "dlon"      FLOAT;
+      "coords"    TEXT[];
+    BEGIN
+      IF "steps_p" < 4 OR "steps_p" % 2 != 0 THEN
+        RAISE EXCEPTION 'Invalid step count';
+      END IF;
+      "halfsteps" := "steps_p" / 2;
+      LOOP
+        "angle" := 2.0 * pi() * "step" / "steps_p";
+        "lat"   := "geosearch_p"."lat" + "dlat" * cos("angle");
+        IF    "lat" >  "philimit" THEN "lat" :=  "philimit";
+        ELSIF "lat" < -"philimit" THEN "lat" := -"philimit";
+        END IF;
+        "dlon"  := "dlat" * sin("angle") / sqrt(
+          ("geosearch_p"."c2" * "lat" + "geosearch_p"."c1") * "lat" +
+          "geosearch_p"."c0" );
+        "coords"[2*"step"+1] := "lat";
+        "coords"[2*"step"+2] := "geosearch_p"."lon" + "dlon";
+        EXIT WHEN "step" >= "halfsteps";
+        IF "step" > 0 THEN
+          "coords"[2*("steps_p"-"step")+1] := "lat";
+          "coords"[2*("steps_p"-"step")+2] := "geosearch_p"."lon" - "dlon";
+        END IF;
+        "step" := "step" + 1;
+      END LOOP;
+      RETURN array_to_string("coords", ',')::POLYGON;
+    END;
+  $$;
+
+COMMENT ON FUNCTION "polysearch"
+  ("geosearch", INTEGER)
+  IS 'Returns a polygon approximating the search circle represented by a given "geosearch" structure; The optional second parameter denotes the number of vertices (defaults to 24)';
+
+
+CREATE FUNCTION "polysearch"
+  ( "latitude_p"  FLOAT,
+    "longitude_p" FLOAT,
+    "radius_p"    FLOAT,
+    "steps_p"     INTEGER = 24 )
+  RETURNS POLYGON
+  LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+    DECLARE
+      "geosearch_v" "geosearch";
+    BEGIN
+      "geosearch_v" := "geosearch"("latitude_p", "longitude_p");
+      "geosearch_v"."dist" := "radius_p";
+      RETURN "polysearch"("geosearch_v", "steps_p");
+    END;
+  $$;
+
+COMMENT ON FUNCTION "polysearch"
+  ("geosearch", INTEGER)
+  IS 'Returns a polygon approximating a search circle around a point given as latitude and longitude in degrees as well as the radius in meters; The optional second parameter denotes the number of vertices (defaults to 24)';
+
+
+/* Usage of spatial indexing for other basic geometric objects:
+
+-- create table containing geographical coordinates in degrees:
+CREATE TABLE "t2" (
+        "id"            SERIAL4         PRIMARY KEY,
+        "geometry"      PATH );
+
+-- create a GiST (not SP-GiST!) index (with default poly_ops operator class):
+CREATE INDEX "t2_geoindex" ON "t2" USING gist (("polyindex"("geometry")));
+
+-- return results within 10,000 meters of Brandenburg Gate:
+-- NOTE: use && operator for overlapping, use <@ operator for containment
+SELECT "t2".*
+  FROM "t2"
+  CROSS JOIN "polysearch"(52.5162746, 13.377704, 10000) AS "poly1"
+  CROSS JOIN LATERAL "geoshift180"("poly1") AS "poly2"
+  WHERE (
+    "polyindex"("geometry") && "poly1" OR
+    "polyindex"("geometry") && "poly2" );
+
+*/
+
+
+CREATE FUNCTION "scattered_polygon_contains_point"
+  ( "scattered_polygon_p" POLYGON[],
+    "point_p"             POINT )
+  RETURNS BOOLEAN
+  LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT count(1) % 2 = 1
+      FROM unnest("scattered_polygon_p") AS "entry"
+      WHERE "entry" @> "point_p"
+  $$;
+
+COMMENT ON FUNCTION "scattered_polygon_contains_point"
+  ( POLYGON[], POINT )
+  IS 'Takes a scattered (or hollow) polygon represented as an array of polygons and, as a second argument, a point; returns TRUE if the number of polygons in which the point is contained is odd';
+
+
+CREATE FUNCTION "scattered_polygon_contains_point"
+  ( "scattered_polygon_p" POLYGON[],
+    "point_x_p"           FLOAT,
+    "point_y_p"           FLOAT )
+  RETURNS BOOLEAN
+  LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT "scattered_polygon_contains_point"(
+      "scattered_polygon_p",
+      point("point_x_p", "point_y_p")
+    )
+  $$;
+
+COMMENT ON FUNCTION "scattered_polygon_contains_point"
+  ( POLYGON[], FLOAT, FLOAT )
+  IS 'Takes a scattered (or hollow) polygon represented as an array of polygons and, as second and third arguments, two coordinates representing a point; returns TRUE if the number of polygons in which the point is contained is odd';
+
+
+CREATE FUNCTION "scattered_polygon_bound_box"
+  ( "scattered_polygon_p" POLYGON[] )
+  RETURNS BOX
+  LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+    DECLARE
+      "first_v"     BOOLEAN;
+      "bound_box_v" BOX;
+      "polygon_v"   POLYGON;
+    BEGIN
+      "first_v" := TRUE;
+      FOR "polygon_v" IN SELECT * FROM unnest("scattered_polygon_p") LOOP
+        IF "first_v" THEN
+          "bound_box_v" := box("polygon_v");
+          "first_v" := FALSE;
+        ELSE
+          "bound_box_v" := bound_box("bound_box_v", box("polygon_v"));
+        END IF;
+      END LOOP;
+      RETURN "bound_box_v";
+    END;
+  $$;
+
+COMMENT ON FUNCTION "scattered_polygon_bound_box"
+  ( POLYGON[] )
+  IS 'Takes a scattered (or hollow) polygon represented as an array of polygons and returns a bounding box';
+
+
+/* Usage of spatial indexing for scattered (or hollow) polygons:
+
+-- create table containing geographical coordinates in degrees:
+CREATE TABLE "t3" (
+        "id"            SERIAL4         PRIMARY KEY,
+        "region"        POLYGON[] );
+
+-- create a GiST (not SP-GiST!) index (with default box_ops operator class):
+CREATE INDEX "t3_geoindex" ON "t3" USING gist (("scattered_polygon_bound_box"("region")));
+
+-- return rows containing Brandenburg Gate's location:
+SELECT "t3".*
+  FROM "t3"
+  CROSS JOIN point(52.5162746, 13.377704) AS "point1"
+  CROSS JOIN LATERAL "geoshift180"("point1") AS "point2"
+  WHERE (
+    "scattered_polygon_contains_point"("region", "point1") OR
+    "scattered_polygon_contains_point"("region", "point2") );
+
+*/
 
 
 
@@ -140,6 +717,8 @@ CREATE TABLE "member" (
         "external_posts"        TEXT,
         "formatting_engine"     TEXT,
         "statement"             TEXT,
+        "latitude"              NUMERIC,
+        "longitude"             NUMERIC,
         "text_search_data"      TSVECTOR,
         CONSTRAINT "active_requires_activated_and_last_activity"
           CHECK ("active" = FALSE OR ("activated" NOTNULL AND "last_activity" NOTNULL)),
@@ -152,9 +731,12 @@ CREATE TABLE "member" (
         CONSTRAINT "notification_dow_requires_notification_hour"
           CHECK ("notification_dow" ISNULL OR "notification_hour" NOTNULL),
         CONSTRAINT "name_not_null_if_activated"
-          CHECK ("activated" ISNULL OR "name" NOTNULL) );
+          CHECK ("activated" ISNULL OR "name" NOTNULL),
+        CONSTRAINT "latitude_and_lontitude_both_null_or_not_null"
+          CHECK (("latitude" NOTNULL) = ("longitude" NOTNULL)) );
 CREATE INDEX "member_authority_login_idx" ON "member" ("authority_login");
 CREATE INDEX "member_active_idx" ON "member" ("active");
+CREATE INDEX "member_geolocation_idx" ON "member" USING spgist (("geoindex"("latitude", "longitude")));
 CREATE INDEX "member_text_search_data_idx" ON "member" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "member"
@@ -207,6 +789,8 @@ COMMENT ON COLUMN "member"."external_memberships" IS 'Other organizations the me
 COMMENT ON COLUMN "member"."external_posts"       IS 'Posts (offices) outside the organization';
 COMMENT ON COLUMN "member"."formatting_engine"    IS 'Allows different formatting engines (i.e. wiki formats) to be used for "member"."statement"';
 COMMENT ON COLUMN "member"."statement"            IS 'Freely chosen text of the member for his/her profile';
+COMMENT ON COLUMN "member"."latitude"             IS 'Latitude (in degrees) of member''s location';
+COMMENT ON COLUMN "member"."longitude"            IS 'Longitude (in degrees) of member''s location';
 
 
 CREATE TABLE "member_history" (
@@ -390,10 +974,11 @@ CREATE TABLE "policy" (
         "no_multistage_majority"        BOOLEAN NOT NULL DEFAULT FALSE,
         CONSTRAINT "issue_quorum_if_and_only_if_not_polling" CHECK (
           "polling" = ("issue_quorum" ISNULL) ),
-        CONSTRAINT "timing" CHECK (
+        CONSTRAINT "min_admission_time_smaller_than_max_admission_time" CHECK (
+          "min_admission_time" < "max_admission_time" ),
+        CONSTRAINT "timing_null_or_not_null_constraints" CHECK (
           ( "polling" = FALSE AND
             "min_admission_time" NOTNULL AND "max_admission_time" NOTNULL AND
-            "min_admission_time" <= "max_admission_time" AND
             "discussion_time" NOTNULL AND
             "verification_time" NOTNULL AND
             "voting_time" NOTNULL ) OR
@@ -417,13 +1002,13 @@ COMMENT ON TABLE "policy" IS 'Policies for a particular proceeding type (timelim
 COMMENT ON COLUMN "policy"."index"                 IS 'Determines the order in listings';
 COMMENT ON COLUMN "policy"."active"                IS 'TRUE = policy can be used for new issues';
 COMMENT ON COLUMN "policy"."polling"               IS 'TRUE = special policy for non-user-generated issues without issue quorum, where certain initiatives (those having the "polling" flag set) do not need to pass the initiative quorum; "min_admission_time" and "max_admission_time" MUST be set to NULL, the other timings may be set to NULL altogether, allowing individual timing for those issues';
-COMMENT ON COLUMN "policy"."min_admission_time"    IS 'Minimum duration of issue state ''admission''; Minimum time an issue stays open';
+COMMENT ON COLUMN "policy"."min_admission_time"    IS 'Minimum duration of issue state ''admission''; Minimum time an issue stays open; Note: should be considerably smaller than "max_admission_time"';
 COMMENT ON COLUMN "policy"."max_admission_time"    IS 'Maximum duration of issue state ''admission''; Maximum time an issue stays open without being "accepted"';
 COMMENT ON COLUMN "policy"."discussion_time"       IS 'Duration of issue state ''discussion''; Regular time until an issue is "half_frozen" after being "accepted"';
 COMMENT ON COLUMN "policy"."verification_time"     IS 'Duration of issue state ''verification''; Regular time until an issue is "fully_frozen" (e.g. entering issue state ''voting'') after being "half_frozen"';
 COMMENT ON COLUMN "policy"."voting_time"           IS 'Duration of issue state ''voting''; Time after an issue is "fully_frozen" but not "closed" (duration of issue state ''voting'')';
 COMMENT ON COLUMN "policy"."issue_quorum"          IS 'Minimum number of supporters needed for one initiative of an issue to allow the issue to pass from ''admission'' to ''discussion'' state (Note: further requirements apply, see tables "admission_rule" and "admission_rule_condition")';
-COMMENT ON COLUMN "policy"."initiative_quorum_num" IS 'Numerator of satisfied supporter quorum  to be reached by an initiative to be "admitted" for voting';
+COMMENT ON COLUMN "policy"."initiative_quorum_num" IS 'Numerator of satisfied supporter quorum to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "policy"."initiative_quorum_den" IS 'Denominator of satisfied supporter quorum to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "policy"."defeat_strength"       IS 'How pairwise defeats are measured for the Schulze method; see type "defeat_strength"; ''tuple'' is the recommended setting';
 COMMENT ON COLUMN "policy"."tie_breaking"          IS 'Tie-breaker for the Schulze method; see type "tie_breaking"; ''variant1'' or ''variant2'' are recommended';
@@ -449,10 +1034,12 @@ CREATE TABLE "unit" (
         "description"           TEXT            NOT NULL DEFAULT '',
         "external_reference"    TEXT,
         "member_count"          INT4,
+        "region"                POLYGON[],
         "text_search_data"      TSVECTOR );
 CREATE INDEX "unit_root_idx" ON "unit" ("id") WHERE "parent_id" ISNULL;
 CREATE INDEX "unit_parent_id_idx" ON "unit" ("parent_id");
 CREATE INDEX "unit_active_idx" ON "unit" ("active");
+CREATE INDEX "unit_geolocation_idx" ON "unit" USING gist (("scattered_polygon_bound_box"("region")));
 CREATE INDEX "unit_text_search_data_idx" ON "unit" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "unit"
@@ -465,7 +1052,8 @@ COMMENT ON TABLE "unit" IS 'Organizational units organized as trees; Delegations
 COMMENT ON COLUMN "unit"."parent_id"          IS 'Parent id of tree node; Multiple roots allowed';
 COMMENT ON COLUMN "unit"."active"             IS 'TRUE means new issues can be created in areas of this unit';
 COMMENT ON COLUMN "unit"."external_reference" IS 'Opaque data field to store an external reference';
-COMMENT ON COLUMN "unit"."member_count"       IS 'Count of members as determined by column "voting_right" in table "privilege"';
+COMMENT ON COLUMN "unit"."member_count"       IS 'Count of members as determined by column "voting_right" in table "privilege" (only active members counted)';
+COMMENT ON COLUMN "unit"."region"             IS 'Scattered (or hollow) polygon represented as an array of polygons indicating valid coordinates for initiatives of issues with this policy';
 
 
 CREATE TABLE "subscription" (
@@ -495,11 +1083,11 @@ CREATE TABLE "area" (
         "name"                  TEXT            NOT NULL,
         "description"           TEXT            NOT NULL DEFAULT '',
         "external_reference"    TEXT,
-        "direct_member_count"   INT4,
-        "member_weight"         INT4,
+        "region"                POLYGON[],
         "text_search_data"      TSVECTOR );
 CREATE INDEX "area_unit_id_idx" ON "area" ("unit_id");
 CREATE INDEX "area_active_idx" ON "area" ("active");
+CREATE INDEX "area_geolocation_idx" ON "area" USING gist (("scattered_polygon_bound_box"("region")));
 CREATE INDEX "area_text_search_data_idx" ON "area" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "area"
@@ -509,10 +1097,9 @@ CREATE TRIGGER "update_text_search_data"
 
 COMMENT ON TABLE "area" IS 'Subject areas';
 
-COMMENT ON COLUMN "area"."active"              IS 'TRUE means new issues can be created in this area';
-COMMENT ON COLUMN "area"."external_reference"  IS 'Opaque data field to store an external reference';
-COMMENT ON COLUMN "area"."direct_member_count" IS 'Number of active members of that area (ignoring their weight), as calculated from view "area_member_count"';
-COMMENT ON COLUMN "area"."member_weight"       IS 'Same as "direct_member_count" but respecting delegations';
+COMMENT ON COLUMN "area"."active"             IS 'TRUE means new issues can be created in this area';
+COMMENT ON COLUMN "area"."external_reference" IS 'Opaque data field to store an external reference';
+COMMENT ON COLUMN "area"."region"             IS 'Scattered (or hollow) polygon represented as an array of polygons indicating valid coordinates for initiatives of issues with this policy';
 
 
 CREATE TABLE "ignored_area" (
@@ -549,7 +1136,9 @@ COMMENT ON COLUMN "allowed_policy"."default_policy" IS 'One policy per area can 
 CREATE TABLE "admission_rule" (
         UNIQUE ("unit_id", "id"),  -- index needed for foreign-key on table "admission_rule_condition"
         "unit_id"               INT4            NOT NULL REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "id"                    SERIAL4         PRIMARY KEY );
+        "id"                    SERIAL4         PRIMARY KEY,
+        "name"                  TEXT            NOT NULL,
+        "description"           TEXT            NOT NULL DEFAULT '' );
 
 COMMENT ON TABLE "admission_rule" IS 'Groups entries in "admission_rule_condition" to regulate how many issues may pass from ''admission'' to ''discussion'' state in a given time';
 
@@ -576,9 +1165,11 @@ COMMENT ON COLUMN "admission_rule_condition"."area_id"           IS 'Set to link
 COMMENT ON COLUMN "admission_rule_condition"."holdoff_time"      IS 'After an issue in the given unit, policy, and/or area has been admitted, the "admission_rule" is disabled for the selected "holdoff_time", e.g. a "holdoff_time" of ''6 hours'' causes four issues per day to be admitted';
 
 
-CREATE TYPE "snapshot_event" AS ENUM ('periodic', 'end_of_admission', 'half_freeze', 'full_freeze');
+CREATE TABLE "snapshot" (
+        "id"                    SERIAL8         PRIMARY KEY,
+        "calculated"            TIMESTAMPTZ     NOT NULL DEFAULT now() );
 
-COMMENT ON TYPE "snapshot_event" IS 'Reason for snapshots: ''periodic'' = due to periodic recalculation, ''end_of_admission'' = saved state at end of admission period, ''half_freeze'' = saved state at end of discussion period, ''full_freeze'' = saved state at end of verification period';
+COMMENT ON TABLE "snapshot" IS 'Point in time when a snapshot of one or more issues (see table "snapshot_issue") and their supporter situation is taken';
 
 
 CREATE TYPE "issue_state" AS ENUM (
@@ -613,8 +1204,10 @@ CREATE TABLE "issue" (
         "discussion_time"       INTERVAL        NOT NULL,
         "verification_time"     INTERVAL        NOT NULL,
         "voting_time"           INTERVAL        NOT NULL,
-        "snapshot"              TIMESTAMPTZ,
-        "latest_snapshot_event" "snapshot_event",
+        "latest_snapshot_id"    INT8            REFERENCES "snapshot" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "admission_snapshot_id" INT8            REFERENCES "snapshot" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+        "half_freeze_snapshot_id" INT8          REFERENCES "snapshot" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "full_freeze_snapshot_id" INT8          REFERENCES "snapshot" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "population"            INT4,
         "voter_count"           INT4,
         "status_quo_schulze_rank" INT4,
@@ -650,14 +1243,13 @@ CREATE TABLE "issue" (
           "fully_frozen" <= "closed" ),
         CONSTRAINT "only_closed_issues_may_be_cleaned" CHECK (
           "cleaned" ISNULL OR "closed" NOTNULL ),
-        CONSTRAINT "last_snapshot_on_full_freeze"
-          CHECK ("snapshot" = "fully_frozen"),  -- NOTE: snapshot can be set, while frozen is NULL yet
-        CONSTRAINT "freeze_requires_snapshot"
-          CHECK ("fully_frozen" ISNULL OR "snapshot" NOTNULL),
-        CONSTRAINT "set_both_or_none_of_snapshot_and_latest_snapshot_event"
-          CHECK (("snapshot" NOTNULL) = ("latest_snapshot_event" NOTNULL)) );
+        CONSTRAINT "snapshot_required" CHECK (
+          --("accepted" ISNULL OR "admission_snapshot_id" NOTNULL) AND
+          ("half_frozen" ISNULL OR "half_freeze_snapshot_id" NOTNULL) AND
+          ("fully_frozen" ISNULL OR "full_freeze_snapshot_id" NOTNULL) ) );
 CREATE INDEX "issue_area_id_idx" ON "issue" ("area_id");
 CREATE INDEX "issue_policy_id_idx" ON "issue" ("policy_id");
+CREATE INDEX "issue_state_idx" ON "issue" ("state");
 CREATE INDEX "issue_created_idx" ON "issue" ("created");
 CREATE INDEX "issue_accepted_idx" ON "issue" ("accepted");
 CREATE INDEX "issue_half_frozen_idx" ON "issue" ("half_frozen");
@@ -665,13 +1257,17 @@ CREATE INDEX "issue_fully_frozen_idx" ON "issue" ("fully_frozen");
 CREATE INDEX "issue_closed_idx" ON "issue" ("closed");
 CREATE INDEX "issue_created_idx_open" ON "issue" ("created") WHERE "closed" ISNULL;
 CREATE INDEX "issue_closed_idx_canceled" ON "issue" ("closed") WHERE "fully_frozen" ISNULL;
+CREATE INDEX "issue_latest_snapshot_id" ON "issue" ("latest_snapshot_id");
+CREATE INDEX "issue_admission_snapshot_id" ON "issue" ("admission_snapshot_id");
+CREATE INDEX "issue_half_freeze_snapshot_id" ON "issue" ("half_freeze_snapshot_id");
+CREATE INDEX "issue_full_freeze_snapshot_id" ON "issue" ("full_freeze_snapshot_id");
 
 COMMENT ON TABLE "issue" IS 'Groups of initiatives';
 
 COMMENT ON COLUMN "issue"."admin_notice"            IS 'Public notice by admin to explain manual interventions, or to announce corrections';
 COMMENT ON COLUMN "issue"."external_reference"      IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "issue"."phase_finished"          IS 'Set to a value NOTNULL, if the current phase has finished, but calculations are pending; No changes in this issue shall be made by the frontend or API when this value is set';
-COMMENT ON COLUMN "issue"."accepted"                IS 'Point in time, when one initiative of issue reached the "issue_quorum" (TODO)';
+COMMENT ON COLUMN "issue"."accepted"                IS 'Point in time, when the issue was accepted for further discussion (see table "admission_rule" and column "issue_quorum" of table "policy")';
 COMMENT ON COLUMN "issue"."half_frozen"             IS 'Point in time, when "discussion_time" has elapsed; Frontends must ensure that for half_frozen issues a) initiatives are not revoked, b) no new drafts are created, c) no initiators are added or removed.';
 COMMENT ON COLUMN "issue"."fully_frozen"            IS 'Point in time, when "verification_time" has elapsed and voting has started; Frontends must ensure that for fully_frozen issues additionally to the restrictions for half_frozen issues a) initiatives are not created, b) no interest is created or removed, c) no supporters are added or removed, d) no opinions are created, changed or deleted.';
 COMMENT ON COLUMN "issue"."closed"                  IS 'Point in time, when "max_admission_time" or "voting_time" have elapsed, and issue is no longer active; Frontends must ensure that for closed issues additionally to the restrictions for half_frozen and fully_frozen issues a) no voter is added or removed to/from the direct_voter table, b) no votes are added, modified or removed.';
@@ -681,8 +1277,10 @@ COMMENT ON COLUMN "issue"."max_admission_time"      IS 'Copied from "policy" tab
 COMMENT ON COLUMN "issue"."discussion_time"         IS 'Copied from "policy" table at creation of issue';
 COMMENT ON COLUMN "issue"."verification_time"       IS 'Copied from "policy" table at creation of issue';
 COMMENT ON COLUMN "issue"."voting_time"             IS 'Copied from "policy" table at creation of issue';
-COMMENT ON COLUMN "issue"."snapshot"                IS 'Point in time, when snapshot tables have been updated and "population" and *_count values were precalculated';
-COMMENT ON COLUMN "issue"."latest_snapshot_event"   IS 'Event type of latest snapshot for issue; Can be used to select the latest snapshot data in the snapshot tables';
+COMMENT ON COLUMN "issue"."latest_snapshot_id"      IS 'Snapshot id of most recent snapshot';
+COMMENT ON COLUMN "issue"."admission_snapshot_id"   IS 'Snapshot id when issue as accepted or canceled in admission phase';
+COMMENT ON COLUMN "issue"."half_freeze_snapshot_id" IS 'Snapshot id at end of discussion phase';
+COMMENT ON COLUMN "issue"."full_freeze_snapshot_id" IS 'Snapshot id at end of verification phase';
 COMMENT ON COLUMN "issue"."population"              IS 'Sum of "weight" column in table "direct_population_snapshot"';
 COMMENT ON COLUMN "issue"."voter_count"             IS 'Total number of direct and delegating voters; This value is related to the final voting, while "population" is related to snapshots before the final voting';
 COMMENT ON COLUMN "issue"."status_quo_schulze_rank" IS 'Schulze rank of status quo, as calculated by "calculate_ranks" function';
@@ -720,6 +1318,10 @@ CREATE TABLE "initiative" (
         "revoked"               TIMESTAMPTZ,
         "revoked_by_member_id"  INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "suggested_initiative_id" INT4          REFERENCES "initiative" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "latitude1"             NUMERIC,
+        "longitude1"            NUMERIC,
+        "latitude2"             NUMERIC,
+        "longitude2"            NUMERIC,
         "external_reference"    TEXT,
         "admitted"              BOOLEAN,
         "supporter_count"                    INT4,
@@ -742,10 +1344,17 @@ CREATE TABLE "initiative" (
         "winner"                BOOLEAN,
         "rank"                  INT4,
         "text_search_data"      TSVECTOR,
+        "draft_text_search_data" TSVECTOR,
         CONSTRAINT "all_or_none_of_revoked_and_revoked_by_member_id_must_be_null"
           CHECK (("revoked" NOTNULL) = ("revoked_by_member_id" NOTNULL)),
         CONSTRAINT "non_revoked_initiatives_cant_suggest_other"
           CHECK ("revoked" NOTNULL OR "suggested_initiative_id" ISNULL),
+        CONSTRAINT "latitude1_and_lontitude1_both_null_or_not_null"
+          CHECK (("latitude1" NOTNULL) = ("longitude1" NOTNULL)),
+        CONSTRAINT "latitude2_and_longitude2_both_null_or_not_null"
+          CHECK (("latitude2" NOTNULL) = ("longitude2" NOTNULL)),
+        CONSTRAINT "latutude2_requires_latitude1"
+          CHECK ("latitude2" ISNULL OR "latitude1" NOTNULL),
         CONSTRAINT "revoked_initiatives_cant_be_admitted"
           CHECK ("revoked" ISNULL OR "admitted" ISNULL),
         CONSTRAINT "non_admitted_initiatives_cant_contain_voting_results" CHECK (
@@ -767,7 +1376,10 @@ CREATE TABLE "initiative" (
         CONSTRAINT "unique_rank_per_issue" UNIQUE ("issue_id", "rank") );
 CREATE INDEX "initiative_created_idx" ON "initiative" ("created");
 CREATE INDEX "initiative_revoked_idx" ON "initiative" ("revoked");
+CREATE INDEX "initiative_geolocation1_idx" ON "initiative" USING spgist (("geoindex"("latitude1", "longitude1")));
+CREATE INDEX "initiative_geolocation2_idx" ON "initiative" USING spgist (("geoindex"("latitude2", "longitude2")));
 CREATE INDEX "initiative_text_search_data_idx" ON "initiative" USING gin ("text_search_data");
+CREATE INDEX "initiative_draft_text_search_data_idx" ON "initiative" USING gin ("draft_text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "initiative"
   FOR EACH ROW EXECUTE PROCEDURE
@@ -778,6 +1390,10 @@ COMMENT ON TABLE "initiative" IS 'Group of members publishing drafts for resolut
 COMMENT ON COLUMN "initiative"."polling"                IS 'Initiative does not need to pass the initiative quorum (see "policy"."polling")';
 COMMENT ON COLUMN "initiative"."revoked"                IS 'Point in time, when one initiator decided to revoke the initiative';
 COMMENT ON COLUMN "initiative"."revoked_by_member_id"   IS 'Member, who decided to revoke the initiative';
+COMMENT ON COLUMN "initiative"."latitude1"              IS 'Latitude (in degrees) of initiative (automatically copied from most recent draft)';
+COMMENT ON COLUMN "initiative"."longitude1"             IS 'Longitude (in degrees) of initiative (automatically copied from most recent draft)';
+COMMENT ON COLUMN "initiative"."latitude2"              IS 'Latitude (in degrees) of initiative''s second marker (automatically copied from most recent draft)';
+COMMENT ON COLUMN "initiative"."longitude2"             IS 'Longitude (in degrees) of initiative''s second marker (automatically copied from most recent draft)';
 COMMENT ON COLUMN "initiative"."external_reference"     IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "initiative"."admitted"               IS 'TRUE, if initiative reaches the "initiative_quorum" when freezing the issue';
 COMMENT ON COLUMN "initiative"."supporter_count"                    IS 'Calculated from table "direct_supporter_snapshot"';
@@ -846,10 +1462,22 @@ CREATE TABLE "draft" (
         "author_id"             INT4            NOT NULL REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "formatting_engine"     TEXT,
         "content"               TEXT            NOT NULL,
+        "latitude1"             NUMERIC,
+        "longitude1"            NUMERIC,
+        "latitude2"             NUMERIC,
+        "longitude2"            NUMERIC,
         "external_reference"    TEXT,
-        "text_search_data"      TSVECTOR );
+        "text_search_data"      TSVECTOR,
+        CONSTRAINT "latitude1_and_lontitude1_both_null_or_not_null"
+          CHECK (("latitude1" NOTNULL) = ("longitude1" NOTNULL)),
+        CONSTRAINT "latitude2_and_longitude2_both_null_or_not_null"
+          CHECK (("latitude2" NOTNULL) = ("longitude2" NOTNULL)),
+        CONSTRAINT "latutude2_requires_latitude1"
+          CHECK ("latitude2" ISNULL OR "latitude1" NOTNULL) );
 CREATE INDEX "draft_created_idx" ON "draft" ("created");
 CREATE INDEX "draft_author_id_created_idx" ON "draft" ("author_id", "created");
+CREATE INDEX "draft_geolocation1_idx" ON "draft" USING spgist (("geoindex"("latitude1", "longitude1")));
+CREATE INDEX "draft_geolocation2_idx" ON "draft" USING spgist (("geoindex"("latitude2", "longitude2")));
 CREATE INDEX "draft_text_search_data_idx" ON "draft" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "draft"
@@ -860,6 +1488,10 @@ COMMENT ON TABLE "draft" IS 'Drafts of initiatives to solve issues; Frontends mu
 
 COMMENT ON COLUMN "draft"."formatting_engine"  IS 'Allows different formatting engines (i.e. wiki formats) to be used';
 COMMENT ON COLUMN "draft"."content"            IS 'Text of the draft in a format depending on the field "formatting_engine"';
+COMMENT ON COLUMN "draft"."latitude1"          IS 'Latitude (in degrees) of initiative (automatically copied to "initiative" table if draft is most recent)';
+COMMENT ON COLUMN "draft"."longitude1"         IS 'Longitude (in degrees) of initiative (automatically copied to "initiative" table if draft is most recent)';
+COMMENT ON COLUMN "draft"."latitude2"          IS 'Latitude (in degrees) of initiative''s second marker (automatically copied to "initiative" table if draft is most recent)';
+COMMENT ON COLUMN "draft"."longitude2"         IS 'Longitude (in degrees) of initiative''s second marker (automatically copied to "initiative" table if draft is most recent)';
 COMMENT ON COLUMN "draft"."external_reference" IS 'Opaque data field to store an external reference';
 
 
@@ -883,6 +1515,10 @@ CREATE TABLE "suggestion" (
         "name"                  TEXT            NOT NULL,
         "formatting_engine"     TEXT,
         "content"               TEXT            NOT NULL DEFAULT '',
+        "latitude1"             NUMERIC,
+        "longitude1"            NUMERIC,
+        "latitude2"             NUMERIC,
+        "longitude2"            NUMERIC,
         "external_reference"    TEXT,
         "text_search_data"      TSVECTOR,
         "minus2_unfulfilled_count" INT4,
@@ -893,9 +1529,17 @@ CREATE TABLE "suggestion" (
         "plus1_fulfilled_count"    INT4,
         "plus2_unfulfilled_count"  INT4,
         "plus2_fulfilled_count"    INT4,
-        "proportional_order"    INT4 );
+        "proportional_order"    INT4,
+        CONSTRAINT "latitude1_and_lontitude1_both_null_or_not_null"
+          CHECK (("latitude1" NOTNULL) = ("longitude1" NOTNULL)),
+        CONSTRAINT "latitude2_and_longitude2_both_null_or_not_null"
+          CHECK (("latitude2" NOTNULL) = ("longitude2" NOTNULL)),
+        CONSTRAINT "latutude2_requires_latitude1"
+          CHECK ("latitude2" ISNULL OR "latitude1" NOTNULL) );
 CREATE INDEX "suggestion_created_idx" ON "suggestion" ("created");
 CREATE INDEX "suggestion_author_id_created_idx" ON "suggestion" ("author_id", "created");
+CREATE INDEX "suggestion_geolocation1_idx" ON "suggestion" USING spgist (("geoindex"("latitude1", "longitude1")));
+CREATE INDEX "suggestion_geolocation2_idx" ON "suggestion" USING spgist (("geoindex"("latitude2", "longitude2")));
 CREATE INDEX "suggestion_text_search_data_idx" ON "suggestion" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "suggestion"
@@ -906,6 +1550,10 @@ CREATE TRIGGER "update_text_search_data"
 COMMENT ON TABLE "suggestion" IS 'Suggestions to initiators, to change the current draft; must not be deleted explicitly, as they vanish automatically if the last opinion is deleted';
 
 COMMENT ON COLUMN "suggestion"."draft_id"                 IS 'Draft, which the author has seen when composing the suggestion; should always be set by a frontend, but defaults to current draft of the initiative (implemented by trigger "default_for_draft_id")';
+COMMENT ON COLUMN "suggestion"."latitude1"                IS 'Latitude (in degrees) of suggestion';
+COMMENT ON COLUMN "suggestion"."longitude1"               IS 'Longitude (in degrees) of suggestion';
+COMMENT ON COLUMN "suggestion"."latitude2"                IS 'Latitude (in degrees) of suggestion''s second marker';
+COMMENT ON COLUMN "suggestion"."longitude2"               IS 'Longitude (in degrees) of suggestion''s second marker';
 COMMENT ON COLUMN "suggestion"."external_reference"       IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "suggestion"."minus2_unfulfilled_count" IS 'Calculated from table "direct_supporter_snapshot", not requiring informed supporters';
 COMMENT ON COLUMN "suggestion"."minus2_fulfilled_count"   IS 'Calculated from table "direct_supporter_snapshot", not requiring informed supporters';
@@ -937,6 +1585,22 @@ CREATE TABLE "suggestion_setting" (
 COMMENT ON TABLE "suggestion_setting" IS 'Place for frontend to store suggestion specific settings of members as strings';
 
 
+CREATE TABLE "temporary_suggestion_counts" (
+        "id"                    INT8            PRIMARY KEY, --REFERENCES "suggestion" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "minus2_unfulfilled_count" INT4         NOT NULL,
+        "minus2_fulfilled_count"   INT4         NOT NULL,
+        "minus1_unfulfilled_count" INT4         NOT NULL,
+        "minus1_fulfilled_count"   INT4         NOT NULL,
+        "plus1_unfulfilled_count"  INT4         NOT NULL,
+        "plus1_fulfilled_count"    INT4         NOT NULL,
+        "plus2_unfulfilled_count"  INT4         NOT NULL,
+        "plus2_fulfilled_count"    INT4         NOT NULL );
+
+COMMENT ON TABLE "temporary_suggestion_counts" IS 'Holds certain calculated values (suggestion counts) temporarily until they can be copied into table "suggestion"';
+
+COMMENT ON COLUMN "temporary_suggestion_counts"."id"  IS 'References "suggestion" ("id") but has no referential integrity trigger associated, due to performance/locking issues';
+
+
 CREATE TABLE "privilege" (
         PRIMARY KEY ("unit_id", "member_id"),
         "unit_id"               INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
@@ -958,15 +1622,6 @@ COMMENT ON COLUMN "privilege"."member_manager"   IS 'Adding/removing members fro
 COMMENT ON COLUMN "privilege"."initiative_right" IS 'Right to create an initiative';
 COMMENT ON COLUMN "privilege"."voting_right"     IS 'Right to support initiatives, create and rate suggestions, and to vote';
 COMMENT ON COLUMN "privilege"."polling_right"    IS 'Right to create issues with policies having the "policy"."polling" flag set, and to add initiatives having the "initiative"."polling" flag set to those issues';
-
-
-CREATE TABLE "membership" (
-        PRIMARY KEY ("area_id", "member_id"),
-        "area_id"               INT4            REFERENCES "area" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE );
-CREATE INDEX "membership_member_id_idx" ON "membership" ("member_id");
-
-COMMENT ON TABLE "membership" IS 'Interest of members in topic areas';
 
 
 CREATE TABLE "interest" (
@@ -1055,56 +1710,36 @@ COMMENT ON COLUMN "delegation"."area_id"  IS 'Reference to area, if delegation i
 COMMENT ON COLUMN "delegation"."issue_id" IS 'Reference to issue, if delegation is issue-wide, otherwise NULL';
 
 
-CREATE TABLE "direct_population_snapshot" (
-        PRIMARY KEY ("issue_id", "event", "member_id"),
-        "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "event"                 "snapshot_event",
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE RESTRICT,
-        "weight"                INT4 );
-CREATE INDEX "direct_population_snapshot_member_id_idx" ON "direct_population_snapshot" ("member_id");
+CREATE TABLE "snapshot_issue" (
+        PRIMARY KEY ("snapshot_id", "issue_id"),
+        "snapshot_id"           INT8            REFERENCES "snapshot" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE );
+CREATE INDEX "snapshot_issue_issue_id_idx" ON "snapshot_issue" ("issue_id");
 
-COMMENT ON TABLE "direct_population_snapshot" IS 'Snapshot of active members having either a "membership" in the "area" or an "interest" in the "issue"; for corrections refer to column "issue_notice" of "issue" table';
-
-COMMENT ON COLUMN "direct_population_snapshot"."event"  IS 'Reason for snapshot, see "snapshot_event" type for details';
-COMMENT ON COLUMN "direct_population_snapshot"."weight" IS 'Weight of member (1 or higher) according to "delegating_population_snapshot"';
-
-
-CREATE TABLE "delegating_population_snapshot" (
-        PRIMARY KEY ("issue_id", "event", "member_id"),
-        "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "event"                "snapshot_event",
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE RESTRICT,
-        "weight"                INT4,
-        "scope"              "delegation_scope" NOT NULL,
-        "delegate_member_ids"   INT4[]          NOT NULL );
-CREATE INDEX "delegating_population_snapshot_member_id_idx" ON "delegating_population_snapshot" ("member_id");
-
-COMMENT ON TABLE "direct_population_snapshot" IS 'Delegations increasing the weight of entries in the "direct_population_snapshot" table; for corrections refer to column "issue_notice" of "issue" table';
-
-COMMENT ON COLUMN "delegating_population_snapshot"."event"               IS 'Reason for snapshot, see "snapshot_event" type for details';
-COMMENT ON COLUMN "delegating_population_snapshot"."member_id"           IS 'Delegating member';
-COMMENT ON COLUMN "delegating_population_snapshot"."weight"              IS 'Intermediate weight';
-COMMENT ON COLUMN "delegating_population_snapshot"."delegate_member_ids" IS 'Chain of members who act as delegates; last entry referes to "member_id" column of table "direct_population_snapshot"';
+COMMENT ON TABLE "snapshot_issue" IS 'List of issues included in a snapshot';
 
 
 CREATE TABLE "direct_interest_snapshot" (
-        PRIMARY KEY ("issue_id", "event", "member_id"),
-        "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "event"                 "snapshot_event",
+        PRIMARY KEY ("snapshot_id", "issue_id", "member_id"),
+        "snapshot_id"           INT8,
+        "issue_id"              INT4,
+        FOREIGN KEY ("snapshot_id", "issue_id")
+          REFERENCES "snapshot_issue" ("snapshot_id", "issue_id") ON DELETE CASCADE ON UPDATE CASCADE,
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE RESTRICT,
         "weight"                INT4 );
 CREATE INDEX "direct_interest_snapshot_member_id_idx" ON "direct_interest_snapshot" ("member_id");
 
 COMMENT ON TABLE "direct_interest_snapshot" IS 'Snapshot of active members having an "interest" in the "issue"; for corrections refer to column "issue_notice" of "issue" table';
 
-COMMENT ON COLUMN "direct_interest_snapshot"."event"            IS 'Reason for snapshot, see "snapshot_event" type for details';
-COMMENT ON COLUMN "direct_interest_snapshot"."weight"           IS 'Weight of member (1 or higher) according to "delegating_interest_snapshot"';
+COMMENT ON COLUMN "direct_interest_snapshot"."weight" IS 'Weight of member (1 or higher) according to "delegating_interest_snapshot"';
 
 
 CREATE TABLE "delegating_interest_snapshot" (
-        PRIMARY KEY ("issue_id", "event", "member_id"),
-        "issue_id"         INT4                 REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "event"                "snapshot_event",
+        PRIMARY KEY ("snapshot_id", "issue_id", "member_id"),
+        "snapshot_id"           INT8,
+        "issue_id"              INT4,
+        FOREIGN KEY ("snapshot_id", "issue_id")
+          REFERENCES "snapshot_issue" ("snapshot_id", "issue_id") ON DELETE CASCADE ON UPDATE CASCADE,
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE RESTRICT,
         "weight"                INT4,
         "scope"              "delegation_scope" NOT NULL,
@@ -1113,39 +1748,39 @@ CREATE INDEX "delegating_interest_snapshot_member_id_idx" ON "delegating_interes
 
 COMMENT ON TABLE "delegating_interest_snapshot" IS 'Delegations increasing the weight of entries in the "direct_interest_snapshot" table; for corrections refer to column "issue_notice" of "issue" table';
 
-COMMENT ON COLUMN "delegating_interest_snapshot"."event"               IS 'Reason for snapshot, see "snapshot_event" type for details';
 COMMENT ON COLUMN "delegating_interest_snapshot"."member_id"           IS 'Delegating member';
 COMMENT ON COLUMN "delegating_interest_snapshot"."weight"              IS 'Intermediate weight';
 COMMENT ON COLUMN "delegating_interest_snapshot"."delegate_member_ids" IS 'Chain of members who act as delegates; last entry referes to "member_id" column of table "direct_interest_snapshot"';
 
 
 CREATE TABLE "direct_supporter_snapshot" (
+        PRIMARY KEY ("snapshot_id", "initiative_id", "member_id"),
+        "snapshot_id"           INT8,
         "issue_id"              INT4            NOT NULL,
-        PRIMARY KEY ("initiative_id", "event", "member_id"),
+        FOREIGN KEY ("snapshot_id", "issue_id")
+          REFERENCES "snapshot_issue" ("snapshot_id", "issue_id") ON DELETE CASCADE ON UPDATE CASCADE,
         "initiative_id"         INT4,
-        "event"                 "snapshot_event",
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE RESTRICT,
         "draft_id"              INT8            NOT NULL,
         "informed"              BOOLEAN         NOT NULL,
         "satisfied"             BOOLEAN         NOT NULL,
         FOREIGN KEY ("issue_id", "initiative_id") REFERENCES "initiative" ("issue_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
         FOREIGN KEY ("initiative_id", "draft_id") REFERENCES "draft" ("initiative_id", "id") ON DELETE NO ACTION ON UPDATE CASCADE,
-        FOREIGN KEY ("issue_id", "event", "member_id") REFERENCES "direct_interest_snapshot" ("issue_id", "event", "member_id") ON DELETE CASCADE ON UPDATE CASCADE );
+        FOREIGN KEY ("snapshot_id", "issue_id", "member_id") REFERENCES "direct_interest_snapshot" ("snapshot_id", "issue_id", "member_id") ON DELETE CASCADE ON UPDATE CASCADE );
 CREATE INDEX "direct_supporter_snapshot_member_id_idx" ON "direct_supporter_snapshot" ("member_id");
 
 COMMENT ON TABLE "direct_supporter_snapshot" IS 'Snapshot of supporters of initiatives (weight is stored in "direct_interest_snapshot"); for corrections refer to column "issue_notice" of "issue" table';
 
 COMMENT ON COLUMN "direct_supporter_snapshot"."issue_id"  IS 'WARNING: No index: For selections use column "initiative_id" and join via table "initiative" where neccessary';
-COMMENT ON COLUMN "direct_supporter_snapshot"."event"     IS 'Reason for snapshot, see "snapshot_event" type for details';
 COMMENT ON COLUMN "direct_supporter_snapshot"."informed"  IS 'Supporter has seen the latest draft of the initiative';
 COMMENT ON COLUMN "direct_supporter_snapshot"."satisfied" IS 'Supporter has no "critical_opinion"s';
 
 
 CREATE TABLE "non_voter" (
-        PRIMARY KEY ("issue_id", "member_id"),
-        "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE );
-CREATE INDEX "non_voter_member_id_idx" ON "non_voter" ("member_id");
+        PRIMARY KEY ("member_id", "issue_id"),
+        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE );
+CREATE INDEX "non_voter_issue_id_idx" ON "non_voter" ("issue_id");
 
 COMMENT ON TABLE "non_voter" IS 'Members who decided to not vote directly on an issue';
 
@@ -1735,6 +2370,31 @@ COMMENT ON FUNCTION "voter_comment_fields_only_set_when_voter_comment_is_set_tri
 COMMENT ON TRIGGER "voter_comment_fields_only_set_when_voter_comment_is_set" ON "direct_voter" IS 'If "comment" is set to NULL, then other comment related fields are also set to NULL.';
 
 
+
+---------------------------------
+-- Delete incomplete snapshots --
+---------------------------------
+
+
+CREATE FUNCTION "delete_snapshot_on_partial_delete_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      DELETE FROM "snapshot" WHERE "id" = OLD."snapshot_id";
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "delete_snapshot_on_partial_delete"
+  AFTER DELETE ON "snapshot_issue"
+  FOR EACH ROW EXECUTE PROCEDURE
+  "delete_snapshot_on_partial_delete_trigger"();
+
+COMMENT ON FUNCTION "delete_snapshot_on_partial_delete_trigger"()          IS 'Implementation of trigger "delete_snapshot_on_partial_delete" on table "snapshot_issue"';
+COMMENT ON TRIGGER "delete_snapshot_on_partial_delete" ON "snapshot_issue" IS 'Deletes whole snapshot if one issue is deleted from the snapshot';
+
+
+
 ---------------------------------------------------------------
 -- Ensure that votes are not modified when issues are closed --
 ---------------------------------------------------------------
@@ -1876,6 +2536,63 @@ CREATE TRIGGER "autofill_initiative_id" BEFORE INSERT ON "opinion"
 
 COMMENT ON FUNCTION "autofill_initiative_id_trigger"()   IS 'Implementation of trigger "autofill_initiative_id" on table "opinion"';
 COMMENT ON TRIGGER "autofill_initiative_id" ON "opinion" IS 'Set "initiative_id" field automatically, if NULL';
+
+
+
+-------------------------------------------------------
+-- Automatic copying of values for indexing purposes --
+-------------------------------------------------------
+
+
+CREATE FUNCTION "copy_current_draft_data"
+  ("initiative_id_p" "initiative"."id"%TYPE )
+  RETURNS VOID
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      PERFORM NULL FROM "initiative" WHERE "id" = "initiative_id_p"
+        FOR UPDATE;
+      UPDATE "initiative" SET
+        "latitude1"  = "draft"."latitude1",
+        "longitude1" = "draft"."longitude1",
+        "latitude2"  = "draft"."latitude2",
+        "longitude2" = "draft"."longitude2",
+        "draft_text_search_data" = "draft"."text_search_data"
+        FROM "current_draft" AS "draft"
+        WHERE "initiative"."id" = "initiative_id_p"
+        AND "draft"."initiative_id" = "initiative_id_p";
+    END;
+  $$;
+
+COMMENT ON FUNCTION "copy_current_draft_data"
+  ( "initiative"."id"%TYPE )
+  IS 'Helper function for function "copy_current_draft_data_trigger"';
+
+
+CREATE FUNCTION "copy_current_draft_data_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      IF TG_OP='DELETE' THEN
+        PERFORM "copy_current_draft_data"(OLD."initiative_id");
+      ELSE
+        IF TG_OP='UPDATE' THEN
+          IF COALESCE(OLD."inititiave_id" != NEW."initiative_id", TRUE) THEN
+            PERFORM "copy_current_draft_data"(OLD."initiative_id");
+          END IF;
+        END IF;
+        PERFORM "copy_current_draft_data"(NEW."initiative_id");
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "copy_current_draft_data"
+  AFTER INSERT OR UPDATE OR DELETE ON "draft"
+  FOR EACH ROW EXECUTE PROCEDURE
+  "copy_current_draft_data_trigger"();
+
+COMMENT ON FUNCTION "copy_current_draft_data_trigger"() IS 'Implementation of trigger "copy_current_draft_data" on table "draft"';
+COMMENT ON TRIGGER "copy_current_draft_data" ON "draft" IS 'Copy certain fields from most recent "draft" to "initiative"';
 
 
 
@@ -2061,6 +2778,7 @@ CREATE VIEW "issue_for_admission" AS
     "issue".*,
     max("initiative"."supporter_count") AS "max_supporter_count"
   FROM "issue"
+  JOIN "policy" ON "issue"."policy_id" = "policy"."id"
   JOIN "initiative" ON "issue"."id" = "initiative"."issue_id"
   JOIN "area" ON "issue"."area_id" = "area"."id"
   JOIN "admission_rule_condition"
@@ -2071,15 +2789,19 @@ CREATE VIEW "issue_for_admission" AS
   )
   AND (
     "admission_rule_condition"."area_id" ISNULL OR
-    "admission_rule_condition"."area_id" = "area"."id"
+    "admission_rule_condition"."area_id" = "issue"."area_id"
   )
   JOIN "applicable_admission_rule"
   ON "admission_rule_condition"."admission_rule_id" = "applicable_admission_rule"."id"
   WHERE "issue"."state" = 'admission'::"issue_state"
+  AND now() >= "issue"."created" + "issue"."min_admission_time"
+  AND "initiative"."supporter_count" >= "policy"."issue_quorum"
+  AND "initiative"."revoked" ISNULL
   GROUP BY "issue"."id"
-  ORDER BY "max_supporter_count" DESC, "issue"."id";
+  ORDER BY "max_supporter_count" DESC, "issue"."id"
+  LIMIT 1;
 
-COMMENT ON VIEW "issue_for_admission" IS 'Issues that are eligible to pass from ''admission'' to ''discussion'' state; needs to be recalculated after admitting the first issue in this view';
+COMMENT ON VIEW "issue_for_admission" IS 'Contains up to 1 issue eligible to pass from ''admission'' to ''discussion'' state; needs to be recalculated after admitting the issue in this view';
 
 
 CREATE VIEW "unit_delegation" AS
@@ -2155,67 +2877,6 @@ CREATE VIEW "issue_delegation" AS
 COMMENT ON VIEW "issue_delegation" IS 'Issue delegations where trusters are active and have voting right';
 
 
-CREATE FUNCTION "membership_weight_with_skipping"
-  ( "area_id_p"         "area"."id"%TYPE,
-    "member_id_p"       "member"."id"%TYPE,
-    "skip_member_ids_p" INT4[] )  -- "member"."id"%TYPE[]
-  RETURNS INT4
-  LANGUAGE 'plpgsql' STABLE AS $$
-    DECLARE
-      "sum_v"          INT4;
-      "delegation_row" "area_delegation"%ROWTYPE;
-    BEGIN
-      "sum_v" := 1;
-      FOR "delegation_row" IN
-        SELECT "area_delegation".*
-        FROM "area_delegation" LEFT JOIN "membership"
-        ON "membership"."area_id" = "area_id_p"
-        AND "membership"."member_id" = "area_delegation"."truster_id"
-        WHERE "area_delegation"."area_id" = "area_id_p"
-        AND "area_delegation"."trustee_id" = "member_id_p"
-        AND "membership"."member_id" ISNULL
-      LOOP
-        IF NOT
-          "skip_member_ids_p" @> ARRAY["delegation_row"."truster_id"]
-        THEN
-          "sum_v" := "sum_v" + "membership_weight_with_skipping"(
-            "area_id_p",
-            "delegation_row"."truster_id",
-            "skip_member_ids_p" || "delegation_row"."truster_id"
-          );
-        END IF;
-      END LOOP;
-      RETURN "sum_v";
-    END;
-  $$;
-
-COMMENT ON FUNCTION "membership_weight_with_skipping"
-  ( "area"."id"%TYPE,
-    "member"."id"%TYPE,
-    INT4[] )
-  IS 'Helper function for "membership_weight" function';
-
-
-CREATE FUNCTION "membership_weight"
-  ( "area_id_p"         "area"."id"%TYPE,
-    "member_id_p"       "member"."id"%TYPE )  -- "member"."id"%TYPE[]
-  RETURNS INT4
-  LANGUAGE 'plpgsql' STABLE AS $$
-    BEGIN
-      RETURN "membership_weight_with_skipping"(
-        "area_id_p",
-        "member_id_p",
-        ARRAY["member_id_p"]
-      );
-    END;
-  $$;
-
-COMMENT ON FUNCTION "membership_weight"
-  ( "area"."id"%TYPE,
-    "member"."id"%TYPE )
-  IS 'Calculates the potential voting weight of a member in a given area';
-
-
 CREATE VIEW "member_count_view" AS
   SELECT count(1) AS "total_count" FROM "member" WHERE "active";
 
@@ -2238,56 +2899,16 @@ CREATE VIEW "unit_member_count" AS
 COMMENT ON VIEW "unit_member_count" IS 'View used to update "member_count" column of "unit" table';
 
 
-CREATE VIEW "area_member_count" AS
-  SELECT
-    "area"."id" AS "area_id",
-    count("member"."id") AS "direct_member_count",
-    coalesce(
-      sum(
-        CASE WHEN "member"."id" NOTNULL THEN
-          "membership_weight"("area"."id", "member"."id")
-        ELSE 0 END
-      )
-    ) AS "member_weight"
-  FROM "area"
-  LEFT JOIN "membership"
-  ON "area"."id" = "membership"."area_id"
-  LEFT JOIN "privilege"
-  ON "privilege"."unit_id" = "area"."unit_id"
-  AND "privilege"."member_id" = "membership"."member_id"
-  AND "privilege"."voting_right"
-  LEFT JOIN "member"
-  ON "member"."id" = "privilege"."member_id"  -- NOTE: no membership here!
-  AND "member"."active"
-  GROUP BY "area"."id";
-
-COMMENT ON VIEW "area_member_count" IS 'View used to update "direct_member_count" and "member_weight" columns of table "area"';
-
-
 CREATE VIEW "opening_draft" AS
-  SELECT "draft".* FROM (
-    SELECT
-      "initiative"."id" AS "initiative_id",
-      min("draft"."id") AS "draft_id"
-    FROM "initiative" JOIN "draft"
-    ON "initiative"."id" = "draft"."initiative_id"
-    GROUP BY "initiative"."id"
-  ) AS "subquery"
-  JOIN "draft" ON "subquery"."draft_id" = "draft"."id";
+  SELECT DISTINCT ON ("initiative_id") * FROM "draft"
+  ORDER BY "initiative_id", "id";
 
 COMMENT ON VIEW "opening_draft" IS 'First drafts of all initiatives';
 
 
 CREATE VIEW "current_draft" AS
-  SELECT "draft".* FROM (
-    SELECT
-      "initiative"."id" AS "initiative_id",
-      max("draft"."id") AS "draft_id"
-    FROM "initiative" JOIN "draft"
-    ON "initiative"."id" = "draft"."initiative_id"
-    GROUP BY "initiative"."id"
-  ) AS "subquery"
-  JOIN "draft" ON "subquery"."draft_id" = "draft"."id";
+  SELECT DISTINCT ON ("initiative_id") * FROM "draft"
+  ORDER BY "initiative_id", "id" DESC;
 
 COMMENT ON VIEW "current_draft" IS 'All latest drafts for each initiative';
 
@@ -2301,7 +2922,7 @@ COMMENT ON VIEW "critical_opinion" IS 'Opinions currently causing dissatisfactio
 
 
 CREATE VIEW "issue_supporter_in_admission_state" AS
-  SELECT DISTINCT  -- TODO: DISTINCT needed?
+  SELECT
     "area"."unit_id",
     "issue"."area_id",
     "issue"."id" AS "issue_id",
@@ -2311,8 +2932,8 @@ CREATE VIEW "issue_supporter_in_admission_state" AS
   JOIN "area" ON "area"."id" = "issue"."area_id"
   JOIN "supporter" ON "supporter"."issue_id" = "issue"."id"
   JOIN "direct_interest_snapshot"
-    ON  "direct_interest_snapshot"."issue_id" = "issue"."id"
-    AND "direct_interest_snapshot"."event" = "issue"."latest_snapshot_event"
+    ON "direct_interest_snapshot"."snapshot_id" = "issue"."latest_snapshot_id"
+    AND "direct_interest_snapshot"."issue_id" = "issue"."id"
     AND "direct_interest_snapshot"."member_id" = "supporter"."member_id"
   WHERE "issue"."state" = 'admission'::"issue_state";
 
@@ -2357,8 +2978,8 @@ CREATE VIEW "individual_suggestion_ranking" AS
   JOIN "initiative" ON "initiative"."id" = "opinion"."initiative_id"
   JOIN "issue" ON "issue"."id" = "initiative"."issue_id"
   JOIN "direct_interest_snapshot"
-    ON  "direct_interest_snapshot"."issue_id" = "issue"."id"
-    AND "direct_interest_snapshot"."event" = "issue"."latest_snapshot_event"
+    ON "direct_interest_snapshot"."snapshot_id" = "issue"."latest_snapshot_id"
+    AND "direct_interest_snapshot"."issue_id" = "issue"."id"
     AND "direct_interest_snapshot"."member_id" = "opinion"."member_id";
 
 COMMENT ON VIEW "individual_suggestion_ranking" IS 'Helper view for "lf_update_suggestion_order" to allow a proportional ordering of suggestions within an initiative';
@@ -3462,11 +4083,6 @@ CREATE FUNCTION "calculate_member_counts"()
       UPDATE "unit" SET "member_count" = "view"."member_count"
         FROM "unit_member_count" AS "view"
         WHERE "view"."unit_id" = "unit"."id";
-      UPDATE "area" SET
-        "direct_member_count" = "view"."direct_member_count",
-        "member_weight"       = "view"."member_weight"
-        FROM "area_member_count" AS "view"
-        WHERE "view"."area_id" = "area"."id";
       RETURN;
     END;
   $$;
@@ -3482,29 +4098,29 @@ COMMENT ON FUNCTION "calculate_member_counts"() IS 'Updates "member_count" table
 
 CREATE VIEW "remaining_harmonic_supporter_weight" AS
   SELECT
+    "direct_interest_snapshot"."snapshot_id",
     "direct_interest_snapshot"."issue_id",
-    "direct_interest_snapshot"."event",
     "direct_interest_snapshot"."member_id",
     "direct_interest_snapshot"."weight" AS "weight_num",
     count("initiative"."id") AS "weight_den"
   FROM "issue"
   JOIN "direct_interest_snapshot"
-    ON "issue"."id" = "direct_interest_snapshot"."issue_id"
-    AND "issue"."latest_snapshot_event" = "direct_interest_snapshot"."event"
+    ON "issue"."latest_snapshot_id" = "direct_interest_snapshot"."snapshot_id"
+    AND "issue"."id" = "direct_interest_snapshot"."issue_id"
   JOIN "initiative"
     ON "issue"."id" = "initiative"."issue_id"
     AND "initiative"."harmonic_weight" ISNULL
   JOIN "direct_supporter_snapshot"
-    ON "initiative"."id" = "direct_supporter_snapshot"."initiative_id"
-    AND "direct_interest_snapshot"."event" = "direct_supporter_snapshot"."event"
+    ON "issue"."latest_snapshot_id" = "direct_supporter_snapshot"."snapshot_id"
+    AND "initiative"."id" = "direct_supporter_snapshot"."initiative_id"
     AND "direct_interest_snapshot"."member_id" = "direct_supporter_snapshot"."member_id"
     AND (
       "direct_supporter_snapshot"."satisfied" = TRUE OR
       coalesce("initiative"."admitted", FALSE) = FALSE
     )
   GROUP BY
+    "direct_interest_snapshot"."snapshot_id",
     "direct_interest_snapshot"."issue_id",
-    "direct_interest_snapshot"."event",
     "direct_interest_snapshot"."member_id",
     "direct_interest_snapshot"."weight";
 
@@ -3523,8 +4139,8 @@ CREATE VIEW "remaining_harmonic_initiative_weight_summands" AS
     ON "remaining_harmonic_supporter_weight"."issue_id" = "initiative"."issue_id"
     AND "initiative"."harmonic_weight" ISNULL
   JOIN "direct_supporter_snapshot"
-    ON "initiative"."id" = "direct_supporter_snapshot"."initiative_id"
-    AND "remaining_harmonic_supporter_weight"."event" = "direct_supporter_snapshot"."event"
+    ON "remaining_harmonic_supporter_weight"."snapshot_id" = "direct_supporter_snapshot"."snapshot_id"
+    AND "initiative"."id" = "direct_supporter_snapshot"."initiative_id"
     AND "remaining_harmonic_supporter_weight"."member_id" = "direct_supporter_snapshot"."member_id"
     AND (
       "direct_supporter_snapshot"."satisfied" = TRUE OR
@@ -3644,146 +4260,9 @@ COMMENT ON FUNCTION "set_harmonic_initiative_weights"
 ------------------------------
 
 
-CREATE FUNCTION "weight_of_added_delegations_for_population_snapshot"
-  ( "issue_id_p"            "issue"."id"%TYPE,
-    "member_id_p"           "member"."id"%TYPE,
-    "delegate_member_ids_p" "delegating_population_snapshot"."delegate_member_ids"%TYPE )
-  RETURNS "direct_population_snapshot"."weight"%TYPE
-  LANGUAGE 'plpgsql' VOLATILE AS $$
-    DECLARE
-      "issue_delegation_row"  "issue_delegation"%ROWTYPE;
-      "delegate_member_ids_v" "delegating_population_snapshot"."delegate_member_ids"%TYPE;
-      "weight_v"              INT4;
-      "sub_weight_v"          INT4;
-    BEGIN
-      PERFORM "require_transaction_isolation"();
-      "weight_v" := 0;
-      FOR "issue_delegation_row" IN
-        SELECT * FROM "issue_delegation"
-        WHERE "trustee_id" = "member_id_p"
-        AND "issue_id" = "issue_id_p"
-      LOOP
-        IF NOT EXISTS (
-          SELECT NULL FROM "direct_population_snapshot"
-          WHERE "issue_id" = "issue_id_p"
-          AND "event" = 'periodic'
-          AND "member_id" = "issue_delegation_row"."truster_id"
-        ) AND NOT EXISTS (
-          SELECT NULL FROM "delegating_population_snapshot"
-          WHERE "issue_id" = "issue_id_p"
-          AND "event" = 'periodic'
-          AND "member_id" = "issue_delegation_row"."truster_id"
-        ) THEN
-          "delegate_member_ids_v" :=
-            "member_id_p" || "delegate_member_ids_p";
-          INSERT INTO "delegating_population_snapshot" (
-              "issue_id",
-              "event",
-              "member_id",
-              "scope",
-              "delegate_member_ids"
-            ) VALUES (
-              "issue_id_p",
-              'periodic',
-              "issue_delegation_row"."truster_id",
-              "issue_delegation_row"."scope",
-              "delegate_member_ids_v"
-            );
-          "sub_weight_v" := 1 +
-            "weight_of_added_delegations_for_population_snapshot"(
-              "issue_id_p",
-              "issue_delegation_row"."truster_id",
-              "delegate_member_ids_v"
-            );
-          UPDATE "delegating_population_snapshot"
-            SET "weight" = "sub_weight_v"
-            WHERE "issue_id" = "issue_id_p"
-            AND "event" = 'periodic'
-            AND "member_id" = "issue_delegation_row"."truster_id";
-          "weight_v" := "weight_v" + "sub_weight_v";
-        END IF;
-      END LOOP;
-      RETURN "weight_v";
-    END;
-  $$;
-
-COMMENT ON FUNCTION "weight_of_added_delegations_for_population_snapshot"
-  ( "issue"."id"%TYPE,
-    "member"."id"%TYPE,
-    "delegating_population_snapshot"."delegate_member_ids"%TYPE )
-  IS 'Helper function for "create_population_snapshot" function';
-
-
-CREATE FUNCTION "create_population_snapshot"
-  ( "issue_id_p" "issue"."id"%TYPE )
-  RETURNS VOID
-  LANGUAGE 'plpgsql' VOLATILE AS $$
-    DECLARE
-      "member_id_v" "member"."id"%TYPE;
-    BEGIN
-      PERFORM "require_transaction_isolation"();
-      DELETE FROM "direct_population_snapshot"
-        WHERE "issue_id" = "issue_id_p"
-        AND "event" = 'periodic';
-      DELETE FROM "delegating_population_snapshot"
-        WHERE "issue_id" = "issue_id_p"
-        AND "event" = 'periodic';
-      INSERT INTO "direct_population_snapshot"
-        ("issue_id", "event", "member_id")
-        SELECT
-          "issue_id_p"                 AS "issue_id",
-          'periodic'::"snapshot_event" AS "event",
-          "member"."id"                AS "member_id"
-        FROM "issue"
-        JOIN "area" ON "issue"."area_id" = "area"."id"
-        JOIN "membership" ON "area"."id" = "membership"."area_id"
-        JOIN "member" ON "membership"."member_id" = "member"."id"
-        JOIN "privilege"
-          ON "privilege"."unit_id" = "area"."unit_id"
-          AND "privilege"."member_id" = "member"."id"
-        WHERE "issue"."id" = "issue_id_p"
-        AND "member"."active" AND "privilege"."voting_right"
-        UNION
-        SELECT
-          "issue_id_p"                 AS "issue_id",
-          'periodic'::"snapshot_event" AS "event",
-          "member"."id"                AS "member_id"
-        FROM "issue"
-        JOIN "area" ON "issue"."area_id" = "area"."id"
-        JOIN "interest" ON "issue"."id" = "interest"."issue_id"
-        JOIN "member" ON "interest"."member_id" = "member"."id"
-        JOIN "privilege"
-          ON "privilege"."unit_id" = "area"."unit_id"
-          AND "privilege"."member_id" = "member"."id"
-        WHERE "issue"."id" = "issue_id_p"
-        AND "member"."active" AND "privilege"."voting_right";
-      FOR "member_id_v" IN
-        SELECT "member_id" FROM "direct_population_snapshot"
-        WHERE "issue_id" = "issue_id_p"
-        AND "event" = 'periodic'
-      LOOP
-        UPDATE "direct_population_snapshot" SET
-          "weight" = 1 +
-            "weight_of_added_delegations_for_population_snapshot"(
-              "issue_id_p",
-              "member_id_v",
-              '{}'
-            )
-          WHERE "issue_id" = "issue_id_p"
-          AND "event" = 'periodic'
-          AND "member_id" = "member_id_v";
-      END LOOP;
-      RETURN;
-    END;
-  $$;
-
-COMMENT ON FUNCTION "create_population_snapshot"
-  ( "issue"."id"%TYPE )
-  IS 'This function creates a new ''periodic'' population snapshot for the given issue. It does neither lock any tables, nor updates precalculated values in other tables.';
-
-
-CREATE FUNCTION "weight_of_added_delegations_for_interest_snapshot"
-  ( "issue_id_p"            "issue"."id"%TYPE,
+CREATE FUNCTION "weight_of_added_delegations_for_snapshot"
+  ( "snapshot_id_p"         "snapshot"."id"%TYPE,
+    "issue_id_p"            "issue"."id"%TYPE,
     "member_id_p"           "member"."id"%TYPE,
     "delegate_member_ids_p" "delegating_interest_snapshot"."delegate_member_ids"%TYPE )
   RETURNS "direct_interest_snapshot"."weight"%TYPE
@@ -3803,40 +4282,41 @@ CREATE FUNCTION "weight_of_added_delegations_for_interest_snapshot"
       LOOP
         IF NOT EXISTS (
           SELECT NULL FROM "direct_interest_snapshot"
-          WHERE "issue_id" = "issue_id_p"
-          AND "event" = 'periodic'
+          WHERE "snapshot_id" = "snapshot_id_p"
+          AND "issue_id" = "issue_id_p"
           AND "member_id" = "issue_delegation_row"."truster_id"
         ) AND NOT EXISTS (
           SELECT NULL FROM "delegating_interest_snapshot"
-          WHERE "issue_id" = "issue_id_p"
-          AND "event" = 'periodic'
+          WHERE "snapshot_id" = "snapshot_id_p"
+          AND "issue_id" = "issue_id_p"
           AND "member_id" = "issue_delegation_row"."truster_id"
         ) THEN
           "delegate_member_ids_v" :=
             "member_id_p" || "delegate_member_ids_p";
           INSERT INTO "delegating_interest_snapshot" (
+              "snapshot_id",
               "issue_id",
-              "event",
               "member_id",
               "scope",
               "delegate_member_ids"
             ) VALUES (
+              "snapshot_id_p",
               "issue_id_p",
-              'periodic',
               "issue_delegation_row"."truster_id",
               "issue_delegation_row"."scope",
               "delegate_member_ids_v"
             );
           "sub_weight_v" := 1 +
-            "weight_of_added_delegations_for_interest_snapshot"(
+            "weight_of_added_delegations_for_snapshot"(
+              "snapshot_id_p",
               "issue_id_p",
               "issue_delegation_row"."truster_id",
               "delegate_member_ids_v"
             );
           UPDATE "delegating_interest_snapshot"
             SET "weight" = "sub_weight_v"
-            WHERE "issue_id" = "issue_id_p"
-            AND "event" = 'periodic'
+            WHERE "snapshot_id" = "snapshot_id_p"
+            AND "issue_id" = "issue_id_p"
             AND "member_id" = "issue_delegation_row"."truster_id";
           "weight_v" := "weight_v" + "sub_weight_v";
         END IF;
@@ -3845,314 +4325,273 @@ CREATE FUNCTION "weight_of_added_delegations_for_interest_snapshot"
     END;
   $$;
 
-COMMENT ON FUNCTION "weight_of_added_delegations_for_interest_snapshot"
-  ( "issue"."id"%TYPE,
+COMMENT ON FUNCTION "weight_of_added_delegations_for_snapshot"
+  ( "snapshot"."id"%TYPE,
+    "issue"."id"%TYPE,
     "member"."id"%TYPE,
     "delegating_interest_snapshot"."delegate_member_ids"%TYPE )
-  IS 'Helper function for "create_interest_snapshot" function';
+  IS 'Helper function for "fill_snapshot" function';
 
 
-CREATE FUNCTION "create_interest_snapshot"
+CREATE FUNCTION "take_snapshot"
   ( "issue_id_p" "issue"."id"%TYPE )
-  RETURNS VOID
+  RETURNS "snapshot"."id"%TYPE
   LANGUAGE 'plpgsql' VOLATILE AS $$
     DECLARE
-      "member_id_v" "member"."id"%TYPE;
+      "snapshot_id_v" "snapshot"."id"%TYPE;
+      "issue_id_v"    "issue"."id"%TYPE;
+      "member_id_v"   "member"."id"%TYPE;
     BEGIN
       PERFORM "require_transaction_isolation"();
-      DELETE FROM "direct_interest_snapshot"
-        WHERE "issue_id" = "issue_id_p"
-        AND "event" = 'periodic';
-      DELETE FROM "delegating_interest_snapshot"
-        WHERE "issue_id" = "issue_id_p"
-        AND "event" = 'periodic';
-      DELETE FROM "direct_supporter_snapshot"
-        USING "initiative"  -- NOTE: due to missing index on issue_id
-        WHERE "initiative"."issue_id" = "issue_id_p"
-        AND "direct_supporter_snapshot"."initiative_id" = "initiative"."id"
-        AND "direct_supporter_snapshot"."event" = 'periodic';
-      INSERT INTO "direct_interest_snapshot"
-        ("issue_id", "event", "member_id")
-        SELECT
-          "issue_id_p"  AS "issue_id",
-          'periodic'    AS "event",
-          "member"."id" AS "member_id"
-        FROM "issue"
-        JOIN "area" ON "issue"."area_id" = "area"."id"
-        JOIN "interest" ON "issue"."id" = "interest"."issue_id"
-        JOIN "member" ON "interest"."member_id" = "member"."id"
-        JOIN "privilege"
-          ON "privilege"."unit_id" = "area"."unit_id"
-          AND "privilege"."member_id" = "member"."id"
-        WHERE "issue"."id" = "issue_id_p"
-        AND "member"."active" AND "privilege"."voting_right";
-      FOR "member_id_v" IN
-        SELECT "member_id" FROM "direct_interest_snapshot"
-        WHERE "issue_id" = "issue_id_p"
-        AND "event" = 'periodic'
+      INSERT INTO "snapshot" DEFAULT VALUES
+        RETURNING "id" INTO "snapshot_id_v";
+      FOR "issue_id_v" IN
+        SELECT "id" FROM "issue"
+        WHERE CASE WHEN "issue_id_p" ISNULL THEN
+          "state" = 'admission'
+        ELSE
+          "id" = "issue_id_p"
+        END
       LOOP
-        UPDATE "direct_interest_snapshot" SET
-          "weight" = 1 +
-            "weight_of_added_delegations_for_interest_snapshot"(
-              "issue_id_p",
-              "member_id_v",
-              '{}'
-            )
-          WHERE "issue_id" = "issue_id_p"
-          AND "event" = 'periodic'
-          AND "member_id" = "member_id_v";
+        INSERT INTO "snapshot_issue" ("snapshot_id", "issue_id")
+          VALUES ("snapshot_id_v", "issue_id_v");
+        INSERT INTO "direct_interest_snapshot"
+          ("snapshot_id", "issue_id", "member_id")
+          SELECT
+            "snapshot_id_v" AS "snapshot_id",
+            "issue_id_v"    AS "issue_id",
+            "member"."id"   AS "member_id"
+          FROM "issue"
+          JOIN "area" ON "issue"."area_id" = "area"."id"
+          JOIN "interest" ON "issue"."id" = "interest"."issue_id"
+          JOIN "member" ON "interest"."member_id" = "member"."id"
+          JOIN "privilege"
+            ON "privilege"."unit_id" = "area"."unit_id"
+            AND "privilege"."member_id" = "member"."id"
+          WHERE "issue"."id" = "issue_id_v"
+          AND "member"."active" AND "privilege"."voting_right";
+        FOR "member_id_v" IN
+          SELECT "member_id" FROM "direct_interest_snapshot"
+          WHERE "snapshot_id" = "snapshot_id_v"
+          AND "issue_id" = "issue_id_v"
+        LOOP
+          UPDATE "direct_interest_snapshot" SET
+            "weight" = 1 +
+              "weight_of_added_delegations_for_snapshot"(
+                "snapshot_id_v",
+                "issue_id_v",
+                "member_id_v",
+                '{}'
+              )
+            WHERE "snapshot_id" = "snapshot_id_v"
+            AND "issue_id" = "issue_id_v"
+            AND "member_id" = "member_id_v";
+        END LOOP;
+        INSERT INTO "direct_supporter_snapshot"
+          ( "snapshot_id", "issue_id", "initiative_id", "member_id",
+            "draft_id", "informed", "satisfied" )
+          SELECT
+            "snapshot_id_v"         AS "snapshot_id",
+            "issue_id_v"            AS "issue_id",
+            "initiative"."id"       AS "initiative_id",
+            "supporter"."member_id" AS "member_id",
+            "supporter"."draft_id"  AS "draft_id",
+            "supporter"."draft_id" = "current_draft"."id" AS "informed",
+            NOT EXISTS (
+              SELECT NULL FROM "critical_opinion"
+              WHERE "initiative_id" = "initiative"."id"
+              AND "member_id" = "supporter"."member_id"
+            ) AS "satisfied"
+          FROM "initiative"
+          JOIN "supporter"
+          ON "supporter"."initiative_id" = "initiative"."id"
+          JOIN "current_draft"
+          ON "initiative"."id" = "current_draft"."initiative_id"
+          JOIN "direct_interest_snapshot"
+          ON "snapshot_id_v" = "direct_interest_snapshot"."snapshot_id"
+          AND "supporter"."member_id" = "direct_interest_snapshot"."member_id"
+          AND "initiative"."issue_id" = "direct_interest_snapshot"."issue_id"
+          WHERE "initiative"."issue_id" = "issue_id_v";
+        DELETE FROM "temporary_suggestion_counts";
+        INSERT INTO "temporary_suggestion_counts"
+          ( "id",
+            "minus2_unfulfilled_count", "minus2_fulfilled_count",
+            "minus1_unfulfilled_count", "minus1_fulfilled_count",
+            "plus1_unfulfilled_count", "plus1_fulfilled_count",
+            "plus2_unfulfilled_count", "plus2_fulfilled_count" )
+          SELECT
+            "suggestion"."id",
+            ( SELECT coalesce(sum("di"."weight"), 0)
+              FROM "opinion" JOIN "direct_interest_snapshot" AS "di"
+              ON "di"."snapshot_id" = "snapshot_id_v"
+              AND "di"."issue_id" = "issue_id_v"
+              AND "di"."member_id" = "opinion"."member_id"
+              WHERE "opinion"."suggestion_id" = "suggestion"."id"
+              AND "opinion"."degree" = -2
+              AND "opinion"."fulfilled" = FALSE
+            ) AS "minus2_unfulfilled_count",
+            ( SELECT coalesce(sum("di"."weight"), 0)
+              FROM "opinion" JOIN "direct_interest_snapshot" AS "di"
+              ON "di"."snapshot_id" = "snapshot_id_v"
+              AND "di"."issue_id" = "issue_id_v"
+              AND "di"."member_id" = "opinion"."member_id"
+              WHERE "opinion"."suggestion_id" = "suggestion"."id"
+              AND "opinion"."degree" = -2
+              AND "opinion"."fulfilled" = TRUE
+            ) AS "minus2_fulfilled_count",
+            ( SELECT coalesce(sum("di"."weight"), 0)
+              FROM "opinion" JOIN "direct_interest_snapshot" AS "di"
+              ON "di"."snapshot_id" = "snapshot_id_v"
+              AND "di"."issue_id" = "issue_id_v"
+              AND "di"."member_id" = "opinion"."member_id"
+              WHERE "opinion"."suggestion_id" = "suggestion"."id"
+              AND "opinion"."degree" = -1
+              AND "opinion"."fulfilled" = FALSE
+            ) AS "minus1_unfulfilled_count",
+            ( SELECT coalesce(sum("di"."weight"), 0)
+              FROM "opinion" JOIN "direct_interest_snapshot" AS "di"
+              ON "di"."snapshot_id" = "snapshot_id_v"
+              AND "di"."issue_id" = "issue_id_v"
+              AND "di"."member_id" = "opinion"."member_id"
+              WHERE "opinion"."suggestion_id" = "suggestion"."id"
+              AND "opinion"."degree" = -1
+              AND "opinion"."fulfilled" = TRUE
+            ) AS "minus1_fulfilled_count",
+            ( SELECT coalesce(sum("di"."weight"), 0)
+              FROM "opinion" JOIN "direct_interest_snapshot" AS "di"
+              ON "di"."snapshot_id" = "snapshot_id_v"
+              AND "di"."issue_id" = "issue_id_v"
+              AND "di"."member_id" = "opinion"."member_id"
+              WHERE "opinion"."suggestion_id" = "suggestion"."id"
+              AND "opinion"."degree" = 1
+              AND "opinion"."fulfilled" = FALSE
+            ) AS "plus1_unfulfilled_count",
+            ( SELECT coalesce(sum("di"."weight"), 0)
+              FROM "opinion" JOIN "direct_interest_snapshot" AS "di"
+              ON "di"."snapshot_id" = "snapshot_id_v"
+              AND "di"."issue_id" = "issue_id_v"
+              AND "di"."member_id" = "opinion"."member_id"
+              WHERE "opinion"."suggestion_id" = "suggestion"."id"
+              AND "opinion"."degree" = 1
+              AND "opinion"."fulfilled" = TRUE
+            ) AS "plus1_fulfilled_count",
+            ( SELECT coalesce(sum("di"."weight"), 0)
+              FROM "opinion" JOIN "direct_interest_snapshot" AS "di"
+              ON "di"."snapshot_id" = "snapshot_id_v"
+              AND "di"."issue_id" = "issue_id_v"
+              AND "di"."member_id" = "opinion"."member_id"
+              WHERE "opinion"."suggestion_id" = "suggestion"."id"
+              AND "opinion"."degree" = 2
+              AND "opinion"."fulfilled" = FALSE
+            ) AS "plus2_unfulfilled_count",
+            ( SELECT coalesce(sum("di"."weight"), 0)
+              FROM "opinion" JOIN "direct_interest_snapshot" AS "di"
+              ON "di"."snapshot_id" = "snapshot_id_v"
+              AND "di"."issue_id" = "issue_id_v"
+              AND "di"."member_id" = "opinion"."member_id"
+              WHERE "opinion"."suggestion_id" = "suggestion"."id"
+              AND "opinion"."degree" = 2
+              AND "opinion"."fulfilled" = TRUE
+            ) AS "plus2_fulfilled_count"
+            FROM "suggestion" JOIN "initiative"
+            ON "suggestion"."initiative_id" = "initiative"."id"
+            WHERE "initiative"."issue_id" = "issue_id_v";
       END LOOP;
-      INSERT INTO "direct_supporter_snapshot"
-        ( "issue_id", "initiative_id", "event", "member_id",
-          "draft_id", "informed", "satisfied" )
-        SELECT
-          "issue_id_p"            AS "issue_id",
-          "initiative"."id"       AS "initiative_id",
-          'periodic'              AS "event",
-          "supporter"."member_id" AS "member_id",
-          "supporter"."draft_id"  AS "draft_id",
-          "supporter"."draft_id" = "current_draft"."id" AS "informed",
-          NOT EXISTS (
-            SELECT NULL FROM "critical_opinion"
-            WHERE "initiative_id" = "initiative"."id"
-            AND "member_id" = "supporter"."member_id"
-          ) AS "satisfied"
-        FROM "initiative"
-        JOIN "supporter"
-        ON "supporter"."initiative_id" = "initiative"."id"
-        JOIN "current_draft"
-        ON "initiative"."id" = "current_draft"."initiative_id"
-        JOIN "direct_interest_snapshot"
-        ON "supporter"."member_id" = "direct_interest_snapshot"."member_id"
-        AND "initiative"."issue_id" = "direct_interest_snapshot"."issue_id"
-        AND "event" = 'periodic'
-        WHERE "initiative"."issue_id" = "issue_id_p";
-      RETURN;
+      RETURN "snapshot_id_v";
     END;
   $$;
 
-COMMENT ON FUNCTION "create_interest_snapshot"
+COMMENT ON FUNCTION "take_snapshot"
   ( "issue"."id"%TYPE )
-  IS 'This function creates a new ''periodic'' interest/supporter snapshot for the given issue. It does neither lock any tables, nor updates precalculated values in other tables.';
+  IS 'This function creates a new interest/supporter snapshot of a particular issue, or, if the argument is NULL, for all issues in ''admission'' phase. It must be executed with TRANSACTION ISOLATION LEVEL REPEATABLE READ. The snapshot must later be finished by calling "finish_snapshot" for every issue.';
 
 
-CREATE FUNCTION "create_snapshot"
+CREATE FUNCTION "finish_snapshot"
   ( "issue_id_p" "issue"."id"%TYPE )
   RETURNS VOID
   LANGUAGE 'plpgsql' VOLATILE AS $$
     DECLARE
-      "initiative_id_v"    "initiative"."id"%TYPE;
-      "suggestion_id_v"    "suggestion"."id"%TYPE;
+      "snapshot_id_v" "snapshot"."id"%TYPE;
     BEGIN
-      PERFORM "require_transaction_isolation"();
-      PERFORM "create_population_snapshot"("issue_id_p");
-      PERFORM "create_interest_snapshot"("issue_id_p");
+      LOCK TABLE "snapshot" IN EXCLUSIVE MODE;
+      SELECT "id" INTO "snapshot_id_v" FROM "snapshot"
+        ORDER BY "id" DESC LIMIT 1;
       UPDATE "issue" SET
-        "snapshot" = coalesce("phase_finished", now()),
-        "latest_snapshot_event" = 'periodic',
+        "latest_snapshot_id" = "snapshot_id_v",
         "population" = (
           SELECT coalesce(sum("weight"), 0)
-          FROM "direct_population_snapshot"
-          WHERE "issue_id" = "issue_id_p"
-          AND "event" = 'periodic'
+          FROM "direct_interest_snapshot"
+          WHERE "snapshot_id" = "snapshot_id_v"
+          AND "issue_id" = "issue_id_p"
         )
         WHERE "id" = "issue_id_p";
-      FOR "initiative_id_v" IN
-        SELECT "id" FROM "initiative" WHERE "issue_id" = "issue_id_p"
-      LOOP
-        UPDATE "initiative" SET
-          "supporter_count" = (
-            SELECT coalesce(sum("di"."weight"), 0)
-            FROM "direct_interest_snapshot" AS "di"
-            JOIN "direct_supporter_snapshot" AS "ds"
-            ON "di"."member_id" = "ds"."member_id"
-            WHERE "di"."issue_id" = "issue_id_p"
-            AND "di"."event" = 'periodic'
-            AND "ds"."initiative_id" = "initiative_id_v"
-            AND "ds"."event" = 'periodic'
-          ),
-          "informed_supporter_count" = (
-            SELECT coalesce(sum("di"."weight"), 0)
-            FROM "direct_interest_snapshot" AS "di"
-            JOIN "direct_supporter_snapshot" AS "ds"
-            ON "di"."member_id" = "ds"."member_id"
-            WHERE "di"."issue_id" = "issue_id_p"
-            AND "di"."event" = 'periodic'
-            AND "ds"."initiative_id" = "initiative_id_v"
-            AND "ds"."event" = 'periodic'
-            AND "ds"."informed"
-          ),
-          "satisfied_supporter_count" = (
-            SELECT coalesce(sum("di"."weight"), 0)
-            FROM "direct_interest_snapshot" AS "di"
-            JOIN "direct_supporter_snapshot" AS "ds"
-            ON "di"."member_id" = "ds"."member_id"
-            WHERE "di"."issue_id" = "issue_id_p"
-            AND "di"."event" = 'periodic'
-            AND "ds"."initiative_id" = "initiative_id_v"
-            AND "ds"."event" = 'periodic'
-            AND "ds"."satisfied"
-          ),
-          "satisfied_informed_supporter_count" = (
-            SELECT coalesce(sum("di"."weight"), 0)
-            FROM "direct_interest_snapshot" AS "di"
-            JOIN "direct_supporter_snapshot" AS "ds"
-            ON "di"."member_id" = "ds"."member_id"
-            WHERE "di"."issue_id" = "issue_id_p"
-            AND "di"."event" = 'periodic'
-            AND "ds"."initiative_id" = "initiative_id_v"
-            AND "ds"."event" = 'periodic'
-            AND "ds"."informed"
-            AND "ds"."satisfied"
-          )
-          WHERE "id" = "initiative_id_v";
-        FOR "suggestion_id_v" IN
-          SELECT "id" FROM "suggestion"
-          WHERE "initiative_id" = "initiative_id_v"
-        LOOP
-          UPDATE "suggestion" SET
-            "minus2_unfulfilled_count" = (
-              SELECT coalesce(sum("snapshot"."weight"), 0)
-              FROM "issue" CROSS JOIN "opinion"
-              JOIN "direct_interest_snapshot" AS "snapshot"
-              ON "snapshot"."issue_id" = "issue"."id"
-              AND "snapshot"."event" = "issue"."latest_snapshot_event"
-              AND "snapshot"."member_id" = "opinion"."member_id"
-              WHERE "issue"."id" = "issue_id_p"
-              AND "opinion"."suggestion_id" = "suggestion_id_v"
-              AND "opinion"."degree" = -2
-              AND "opinion"."fulfilled" = FALSE
-            ),
-            "minus2_fulfilled_count" = (
-              SELECT coalesce(sum("snapshot"."weight"), 0)
-              FROM "issue" CROSS JOIN "opinion"
-              JOIN "direct_interest_snapshot" AS "snapshot"
-              ON "snapshot"."issue_id" = "issue"."id"
-              AND "snapshot"."event" = "issue"."latest_snapshot_event"
-              AND "snapshot"."member_id" = "opinion"."member_id"
-              WHERE "issue"."id" = "issue_id_p"
-              AND "opinion"."suggestion_id" = "suggestion_id_v"
-              AND "opinion"."degree" = -2
-              AND "opinion"."fulfilled" = TRUE
-            ),
-            "minus1_unfulfilled_count" = (
-              SELECT coalesce(sum("snapshot"."weight"), 0)
-              FROM "issue" CROSS JOIN "opinion"
-              JOIN "direct_interest_snapshot" AS "snapshot"
-              ON "snapshot"."issue_id" = "issue"."id"
-              AND "snapshot"."event" = "issue"."latest_snapshot_event"
-              AND "snapshot"."member_id" = "opinion"."member_id"
-              WHERE "issue"."id" = "issue_id_p"
-              AND "opinion"."suggestion_id" = "suggestion_id_v"
-              AND "opinion"."degree" = -1
-              AND "opinion"."fulfilled" = FALSE
-            ),
-            "minus1_fulfilled_count" = (
-              SELECT coalesce(sum("snapshot"."weight"), 0)
-              FROM "issue" CROSS JOIN "opinion"
-              JOIN "direct_interest_snapshot" AS "snapshot"
-              ON "snapshot"."issue_id" = "issue"."id"
-              AND "snapshot"."event" = "issue"."latest_snapshot_event"
-              AND "snapshot"."member_id" = "opinion"."member_id"
-              WHERE "issue"."id" = "issue_id_p"
-              AND "opinion"."suggestion_id" = "suggestion_id_v"
-              AND "opinion"."degree" = -1
-              AND "opinion"."fulfilled" = TRUE
-            ),
-            "plus1_unfulfilled_count" = (
-              SELECT coalesce(sum("snapshot"."weight"), 0)
-              FROM "issue" CROSS JOIN "opinion"
-              JOIN "direct_interest_snapshot" AS "snapshot"
-              ON "snapshot"."issue_id" = "issue"."id"
-              AND "snapshot"."event" = "issue"."latest_snapshot_event"
-              AND "snapshot"."member_id" = "opinion"."member_id"
-              WHERE "issue"."id" = "issue_id_p"
-              AND "opinion"."suggestion_id" = "suggestion_id_v"
-              AND "opinion"."degree" = 1
-              AND "opinion"."fulfilled" = FALSE
-            ),
-            "plus1_fulfilled_count" = (
-              SELECT coalesce(sum("snapshot"."weight"), 0)
-              FROM "issue" CROSS JOIN "opinion"
-              JOIN "direct_interest_snapshot" AS "snapshot"
-              ON "snapshot"."issue_id" = "issue"."id"
-              AND "snapshot"."event" = "issue"."latest_snapshot_event"
-              AND "snapshot"."member_id" = "opinion"."member_id"
-              WHERE "issue"."id" = "issue_id_p"
-              AND "opinion"."suggestion_id" = "suggestion_id_v"
-              AND "opinion"."degree" = 1
-              AND "opinion"."fulfilled" = TRUE
-            ),
-            "plus2_unfulfilled_count" = (
-              SELECT coalesce(sum("snapshot"."weight"), 0)
-              FROM "issue" CROSS JOIN "opinion"
-              JOIN "direct_interest_snapshot" AS "snapshot"
-              ON "snapshot"."issue_id" = "issue"."id"
-              AND "snapshot"."event" = "issue"."latest_snapshot_event"
-              AND "snapshot"."member_id" = "opinion"."member_id"
-              WHERE "issue"."id" = "issue_id_p"
-              AND "opinion"."suggestion_id" = "suggestion_id_v"
-              AND "opinion"."degree" = 2
-              AND "opinion"."fulfilled" = FALSE
-            ),
-            "plus2_fulfilled_count" = (
-              SELECT coalesce(sum("snapshot"."weight"), 0)
-              FROM "issue" CROSS JOIN "opinion"
-              JOIN "direct_interest_snapshot" AS "snapshot"
-              ON "snapshot"."issue_id" = "issue"."id"
-              AND "snapshot"."event" = "issue"."latest_snapshot_event"
-              AND "snapshot"."member_id" = "opinion"."member_id"
-              WHERE "issue"."id" = "issue_id_p"
-              AND "opinion"."suggestion_id" = "suggestion_id_v"
-              AND "opinion"."degree" = 2
-              AND "opinion"."fulfilled" = TRUE
-            )
-            WHERE "suggestion"."id" = "suggestion_id_v";
-        END LOOP;
-      END LOOP;
+      UPDATE "initiative" SET
+        "supporter_count" = (
+          SELECT coalesce(sum("di"."weight"), 0)
+          FROM "direct_interest_snapshot" AS "di"
+          JOIN "direct_supporter_snapshot" AS "ds"
+          ON "di"."member_id" = "ds"."member_id"
+          WHERE "di"."snapshot_id" = "snapshot_id_v"
+          AND "di"."issue_id" = "issue_id_p"
+          AND "ds"."snapshot_id" = "snapshot_id_v"
+          AND "ds"."initiative_id" = "initiative"."id"
+        ),
+        "informed_supporter_count" = (
+          SELECT coalesce(sum("di"."weight"), 0)
+          FROM "direct_interest_snapshot" AS "di"
+          JOIN "direct_supporter_snapshot" AS "ds"
+          ON "di"."member_id" = "ds"."member_id"
+          WHERE "di"."snapshot_id" = "snapshot_id_v"
+          AND "di"."issue_id" = "issue_id_p"
+          AND "ds"."snapshot_id" = "snapshot_id_v"
+          AND "ds"."initiative_id" = "initiative"."id"
+          AND "ds"."informed"
+        ),
+        "satisfied_supporter_count" = (
+          SELECT coalesce(sum("di"."weight"), 0)
+          FROM "direct_interest_snapshot" AS "di"
+          JOIN "direct_supporter_snapshot" AS "ds"
+          ON "di"."member_id" = "ds"."member_id"
+          WHERE "di"."snapshot_id" = "snapshot_id_v"
+          AND "di"."issue_id" = "issue_id_p"
+          AND "ds"."snapshot_id" = "snapshot_id_v"
+          AND "ds"."initiative_id" = "initiative"."id"
+          AND "ds"."satisfied"
+        ),
+        "satisfied_informed_supporter_count" = (
+          SELECT coalesce(sum("di"."weight"), 0)
+          FROM "direct_interest_snapshot" AS "di"
+          JOIN "direct_supporter_snapshot" AS "ds"
+          ON "di"."member_id" = "ds"."member_id"
+          WHERE "di"."snapshot_id" = "snapshot_id_v"
+          AND "di"."issue_id" = "issue_id_p"
+          AND "ds"."snapshot_id" = "snapshot_id_v"
+          AND "ds"."initiative_id" = "initiative"."id"
+          AND "ds"."informed"
+          AND "ds"."satisfied"
+        )
+        WHERE "issue_id" = "issue_id_p";
+      UPDATE "suggestion" SET
+        "minus2_unfulfilled_count" = "temp"."minus2_unfulfilled_count",
+        "minus2_fulfilled_count"   = "temp"."minus2_fulfilled_count",
+        "minus1_unfulfilled_count" = "temp"."minus1_unfulfilled_count",
+        "minus1_fulfilled_count"   = "temp"."minus1_fulfilled_count",
+        "plus1_unfulfilled_count"  = "temp"."plus1_unfulfilled_count",
+        "plus1_fulfilled_count"    = "temp"."plus1_fulfilled_count",
+        "plus2_unfulfilled_count"  = "temp"."plus2_unfulfilled_count",
+        "plus2_fulfilled_count"    = "temp"."plus2_fulfilled_count"
+        FROM "temporary_suggestion_counts" AS "temp", "initiative"
+        WHERE "temp"."id" = "suggestion"."id"
+        AND "initiative"."issue_id" = "issue_id_p"
+        AND "suggestion"."initiative_id" = "initiative"."id";
+      DELETE FROM "temporary_suggestion_counts";
       RETURN;
     END;
   $$;
 
-COMMENT ON FUNCTION "create_snapshot"
+COMMENT ON FUNCTION "finish_snapshot"
   ( "issue"."id"%TYPE )
-  IS 'This function creates a complete new ''periodic'' snapshot of population, interest and support for the given issue. All involved tables are locked, and after completion precalculated values in the source tables are updated.';
-
-
-CREATE FUNCTION "set_snapshot_event"
-  ( "issue_id_p" "issue"."id"%TYPE,
-    "event_p" "snapshot_event" )
-  RETURNS VOID
-  LANGUAGE 'plpgsql' VOLATILE AS $$
-    DECLARE
-      "event_v" "issue"."latest_snapshot_event"%TYPE;
-    BEGIN
-      PERFORM "require_transaction_isolation"();
-      SELECT "latest_snapshot_event" INTO "event_v" FROM "issue"
-        WHERE "id" = "issue_id_p" FOR UPDATE;
-      UPDATE "issue" SET "latest_snapshot_event" = "event_p"
-        WHERE "id" = "issue_id_p";
-      UPDATE "direct_population_snapshot" SET "event" = "event_p"
-        WHERE "issue_id" = "issue_id_p" AND "event" = "event_v";
-      UPDATE "delegating_population_snapshot" SET "event" = "event_p"
-        WHERE "issue_id" = "issue_id_p" AND "event" = "event_v";
-      UPDATE "direct_interest_snapshot" SET "event" = "event_p"
-        WHERE "issue_id" = "issue_id_p" AND "event" = "event_v";
-      UPDATE "delegating_interest_snapshot" SET "event" = "event_p"
-        WHERE "issue_id" = "issue_id_p" AND "event" = "event_v";
-      UPDATE "direct_supporter_snapshot" SET "event" = "event_p"
-        FROM "initiative"  -- NOTE: due to missing index on issue_id
-        WHERE "initiative"."issue_id" = "issue_id_p"
-        AND "direct_supporter_snapshot"."initiative_id" = "initiative"."id"
-        AND "direct_supporter_snapshot"."event" = "event_v";
-      RETURN;
-    END;
-  $$;
-
-COMMENT ON FUNCTION "set_snapshot_event"
-  ( "issue"."id"%TYPE,
-    "snapshot_event" )
-  IS 'Change "event" attribute of the previous ''periodic'' snapshot';
+  IS 'After calling "take_snapshot", this function "finish_snapshot" needs to be called for every issue in the snapshot (separate function calls keep locking time minimal)';
 
 
 
@@ -4884,6 +5323,29 @@ COMMENT ON FUNCTION "calculate_ranks"
 -----------------------------
 
 
+CREATE FUNCTION "issue_admission"()
+  RETURNS BOOLEAN
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "issue_id_v" "issue"."id"%TYPE;
+    BEGIN
+      PERFORM "dont_require_transaction_isolation"();
+      LOCK TABLE "snapshot" IN EXCLUSIVE MODE;
+      SELECT "id" INTO "issue_id_v" FROM "issue_for_admission" LIMIT 1;
+      IF "issue_id_v" ISNULL THEN RETURN FALSE; END IF;
+      UPDATE "issue" SET
+        "admission_snapshot_id" = "latest_snapshot_id",
+        "state"                 = 'discussion',
+        "accepted"              = now(),
+        "phase_finished"        = NULL
+        WHERE "id" = "issue_id_v";
+      RETURN TRUE;
+    END;
+  $$;
+
+COMMENT ON FUNCTION "issue_admission"() IS 'Checks if an issue can be admitted for further discussion; returns TRUE on success in which case the function must be called again until it returns FALSE';
+
+
 CREATE TYPE "check_issue_persistence" AS (
         "state"                 "issue_state",
         "phase_finished"        BOOLEAN,
@@ -4901,21 +5363,26 @@ CREATE FUNCTION "check_issue"
   RETURNS "check_issue_persistence"
   LANGUAGE 'plpgsql' VOLATILE AS $$
     DECLARE
-      "issue_row"      "issue"%ROWTYPE;
-      "policy_row"     "policy"%ROWTYPE;
-      "initiative_row" "initiative"%ROWTYPE;
-      "state_v"        "issue_state";
+      "issue_row"         "issue"%ROWTYPE;
+      "last_calculated_v" "snapshot"."calculated"%TYPE;
+      "policy_row"        "policy"%ROWTYPE;
+      "initiative_row"    "initiative"%ROWTYPE;
+      "state_v"           "issue_state";
     BEGIN
       PERFORM "require_transaction_isolation"();
       IF "persist" ISNULL THEN
         SELECT * INTO "issue_row" FROM "issue" WHERE "id" = "issue_id_p"
           FOR UPDATE;
+        SELECT "calculated" INTO "last_calculated_v"
+          FROM "snapshot" JOIN "snapshot_issue"
+          ON "snapshot"."id" = "snapshot_issue"."snapshot_id"
+          WHERE "snapshot_issue"."issue_id" = "issue_id_p";
         IF "issue_row"."closed" NOTNULL THEN
           RETURN NULL;
         END IF;
         "persist"."state" := "issue_row"."state";
         IF
-          ( "issue_row"."state" = 'admission' AND now() >=
+          ( "issue_row"."state" = 'admission' AND "last_calculated_v" >=
             "issue_row"."created" + "issue_row"."max_admission_time" ) OR
           ( "issue_row"."state" = 'discussion' AND now() >=
             "issue_row"."accepted" + "issue_row"."discussion_time" ) OR
@@ -4967,15 +5434,18 @@ CREATE FUNCTION "check_issue"
         "persist"."state" IN ('admission', 'discussion', 'verification') AND
         coalesce("persist"."snapshot_created", FALSE) = FALSE
       THEN
-        PERFORM "create_snapshot"("issue_id_p");
+        IF "persist"."state" != 'admission' THEN
+          PERFORM "take_snapshot"("issue_id_p");
+          PERFORM "finish_snapshot"("issue_id_p");
+        END IF;
         "persist"."snapshot_created" = TRUE;
         IF "persist"."phase_finished" THEN
           IF "persist"."state" = 'admission' THEN
-            PERFORM "set_snapshot_event"("issue_id_p", 'end_of_admission');
+            UPDATE "issue" SET "admission_snapshot_id" = "latest_snapshot_id";
           ELSIF "persist"."state" = 'discussion' THEN
-            PERFORM "set_snapshot_event"("issue_id_p", 'half_freeze');
+            UPDATE "issue" SET "half_freeze_snapshot_id" = "latest_snapshot_id";
           ELSIF "persist"."state" = 'verification' THEN
-            PERFORM "set_snapshot_event"("issue_id_p", 'full_freeze');
+            UPDATE "issue" SET "full_freeze_snapshot_id" = "latest_snapshot_id";
             SELECT * INTO "issue_row" FROM "issue" WHERE "id" = "issue_id_p";
             SELECT * INTO "policy_row" FROM "policy"
               WHERE "id" = "issue_row"."policy_id";
@@ -5037,23 +5507,7 @@ CREATE FUNCTION "check_issue"
       IF "persist"."state" = 'admission' THEN
         SELECT * INTO "issue_row" FROM "issue" WHERE "id" = "issue_id_p"
           FOR UPDATE;
-        SELECT * INTO "policy_row"
-          FROM "policy" WHERE "id" = "issue_row"."policy_id";
-        IF 
-          ( now() >=
-            "issue_row"."created" + "issue_row"."min_admission_time" ) AND
-          -- TODO: implement new mechanism for issue admission
-          EXISTS (
-            SELECT NULL FROM "initiative" WHERE "issue_id" = "issue_id_p"
-            AND "supporter_count" >= "policy_row"."issue_quorum"
-          )
-        THEN
-          UPDATE "issue" SET
-            "state"          = 'discussion',
-            "accepted"       = coalesce("phase_finished", now()),
-            "phase_finished" = NULL
-            WHERE "id" = "issue_id_p";
-        ELSIF "issue_row"."phase_finished" NOTNULL THEN
+        IF "issue_row"."phase_finished" NOTNULL THEN
           UPDATE "issue" SET
             "state"          = 'canceled_issue_not_accepted',
             "closed"         = "phase_finished",
@@ -5125,13 +5579,20 @@ CREATE FUNCTION "check_everything"()
   RETURNS VOID
   LANGUAGE 'plpgsql' VOLATILE AS $$
     DECLARE
-      "issue_id_v" "issue"."id"%TYPE;
-      "persist_v"  "check_issue_persistence";
+      "snapshot_id_v" "snapshot"."id"%TYPE;
+      "issue_id_v"    "issue"."id"%TYPE;
+      "persist_v"     "check_issue_persistence";
     BEGIN
       RAISE WARNING 'Function "check_everything" should only be used for development and debugging purposes';
       DELETE FROM "expired_session";
       PERFORM "check_activity"();
       PERFORM "calculate_member_counts"();
+      SELECT "take_snapshot"(NULL) INTO "snapshot_id_v";
+      PERFORM "finish_snapshot"("issue_id") FROM "snapshot_issue"
+        WHERE "snapshot_id" = "snapshot_id_v";
+      LOOP
+        EXIT WHEN "issue_admission"() = FALSE;
+      END LOOP;
       FOR "issue_id_v" IN SELECT "id" FROM "open_issue" LOOP
         "persist_v" := NULL;
         LOOP
@@ -5143,7 +5604,7 @@ CREATE FUNCTION "check_everything"()
     END;
   $$;
 
-COMMENT ON FUNCTION "check_everything"() IS 'Amongst other regular tasks this function performs "check_issue" for every open issue. Use this function only for development and debugging purposes, as you may run into locking and/or serialization problems in productive environments.';
+COMMENT ON FUNCTION "check_everything"() IS 'Amongst other regular tasks, this function performs "check_issue" for every open issue. Use this function only for development and debugging purposes, as you may run into locking and/or serialization problems in productive environments.';
 
 
 
