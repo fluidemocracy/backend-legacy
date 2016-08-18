@@ -3,6 +3,8 @@
 
 BEGIN;
 
+CREATE EXTENSION latlon;  -- load pgLatLon extenstion
+
 CREATE VIEW "liquid_feedback_version" AS
   SELECT * FROM (VALUES ('4.0.0', 4, 0, 0))
   AS "subquery"("string", "major", "minor", "revision");
@@ -43,586 +45,6 @@ COMMENT ON FUNCTION "highlight"
   ( "body_p"       TEXT,
     "query_text_p" TEXT )
   IS 'For a given a user query this function encapsulates all matches with asterisks. Asterisks and backslashes being already present are preceeded with one extra backslash.';
-
-
-
------------------------------------------------
--- spatial indexing and distance calculation --
------------------------------------------------
-
-
-CREATE DOMAIN "geoindex" AS point CHECK (VALUE <@ '((-1,-1),(1,1))'::box);
-
-COMMENT ON DOMAIN "geoindex" IS 'Data type used for indexing geographical coordinates';
-
-
-CREATE FUNCTION "geoindex"
-  ( "latitude_p"  FLOAT,
-    "longitude_p" FLOAT )
-  RETURNS "geoindex"
-  LANGUAGE sql IMMUTABLE STRICT AS $$
-    SELECT point("latitude_p" / 90, "longitude_p" / 180)::"geoindex"
-  $$;
-
-COMMENT ON FUNCTION "geoindex"
-  (FLOAT, FLOAT)
-  IS 'Transforms coordinates given as latitude (from -90 to 90) and logitude (from -180 to 180) into a data type suitable for a quadtree index';
-
-
-CREATE TYPE "geosearch" AS (
-        "lat"           FLOAT,
-        "lon"           FLOAT,
-        "c3"            FLOAT,
-        "c2"            FLOAT,
-        "c1"            FLOAT,
-        "c0"            FLOAT,
-        "dist"          FLOAT,
-        "bbox1"         BOX,
-        "bbox2"         BOX );
-
-COMMENT ON TYPE "geosearch" IS 'Structure returned by function "geosearch" holding one or two bounding boxes ("bbox1" and optionally "bbox2") for index lookup as well as the starting point (i.e. center point given by "lat" and "lon") and coefficients ("c3" through "c0") for distance approximation';
-
-COMMENT ON COLUMN "geosearch"."lat"   IS 'Latitude of center of search area';
-COMMENT ON COLUMN "geosearch"."lon"   IS 'Longitude of center of search area';
-COMMENT ON COLUMN "geosearch"."c3"    IS 'Coefficient for distance calculation';
-COMMENT ON COLUMN "geosearch"."c2"    IS 'Coefficient for distance calculation';
-COMMENT ON COLUMN "geosearch"."c1"    IS 'Coefficient for distance calculation';
-COMMENT ON COLUMN "geosearch"."c0"    IS 'Coefficient for distance calculation';
-COMMENT ON COLUMN "geosearch"."bbox1" IS 'Bounding box suitable for use with output of "geoindex" function';
-COMMENT ON COLUMN "geosearch"."bbox2" IS 'Second bounding box (see column "bbox1") set if search crosses the 180th meridian';
-
-
-CREATE FUNCTION "geosearch"
-  ( "latitude_p"  FLOAT,
-    "longitude_p" FLOAT )
-  RETURNS "geosearch"
-  LANGUAGE plpgsql IMMUTABLE STRICT AS $$
-    DECLARE
-      -- constants:
-      -- (with a = radius at equator, and b = radius at pole)
-      "degrad"   FLOAT := 0.017453292519943295;    -- pi / 180
-      "degrad2"  FLOAT := 0.00030461741978670857;  -- (pi / 180)^2
-      "a2"       FLOAT := 40680631590769;          -- a^2
-      "eps2"     FLOAT := 0.006694379990141316;    -- (a^2 - b^2) / a^2
-      "subeps2"  FLOAT := 0.9933056200098587;      -- 1 - "eps2"   
-      "subeps22" FLOAT := 0.9866560547431698;      -- (1 - "eps2")^2
-      -- latitude in radians:
-      "phi0rad"  FLOAT := "degrad" * "latitude_p";
-      -- helper variables:
-      "sinp0"    FLOAT;  -- sin("phi0rad")
-      "cosp0"    FLOAT;  -- cos("phi0rad")
-      "sinp02"   FLOAT;  -- sin("phi0rad")^2
-      "e2sinp02" FLOAT;  -- "eps2" * sin("phi0rad")^2
-      "subsin"   FLOAT;  -- 1 - sin("phi0rad")^2
-      "subse"    FLOAT;  -- 1 - "eps2" * sin("phi0rad")^2
-      "subse2"   FLOAT;  -- ("subse")^2
-      "t20"      FLOAT;  -- taylor coefficient for (delta latitude)^2
-      "t02"      FLOAT;  -- taylor coefficient for (delta longitude)^2 / "t20"
-      "t12"      FLOAT;  -- taylor coefficient for (d lat)^1*(d lon)^2 / "t20"
-      "t22"      FLOAT;  -- taylor coefficient for (d lat)^2*(d lon)^2 / "t20"
-      -- result:
-      "res"      "geosearch";
-    BEGIN
-      PERFORM "geoindex"("latitude_p", "longitude_p");  -- check bounds
-      "sinp0"    := sin("phi0rad");
-      "cosp0"    := cos("phi0rad");
-      "sinp02"   := "sinp0" * "sinp0";
-      "e2sinp02" := "eps2" * "sinp02";
-      "subsin"   := 1 - "sinp02";
-      "subse"    := 1 - "e2sinp02";
-      "subse2"   := "subse" * "subse";
-      "t20"      := "a2" * "subeps22" / ("subse" * "subse2");
-      "t02"      := "subsin" * "subse2" / "subeps22";
-      "t12"      := -"sinp0" * "cosp0" * "subse" / "subeps2";
-      "t22"      := -"subsin" * (0.5+"e2sinp02") / "subeps2";
-      "res"."lat" := "latitude_p";
-      "res"."lon" := "longitude_p";
-      "res"."c3"  := "degrad2" * "t20";
-      "res"."c2"  := "degrad2" * "t22";
-      "res"."c1"  := "degrad" * ("t12" - 2 * "t22" * "phi0rad");
-      "res"."c0"  := ("t22" * "phi0rad" - "t12") * "phi0rad" + "t02";
-      "res"."dist"  := 'Infinity'::FLOAT;
-      "res"."bbox1" := box(point(1, 1), point(-1, -1));
-      "res"."bbox2" := NULL;
-      RETURN "res";
-    END;
-  $$;
-
-COMMENT ON FUNCTION "geosearch"
-  ( FLOAT, FLOAT )
-  IS 'Takes latitude and longitude (in degrees), and returns a "geosearch" structure suitable for distance calculation; NOTE: use function with same name but three arguments, i.e. "geosearch"(FLOAT, FLOAT, FLOAT), for searches with limited radius';
-
-
-CREATE FUNCTION "geosearch"
-  ( "latitude_p"  FLOAT,
-    "longitude_p" FLOAT,
-    "radius_p"    FLOAT )
-  RETURNS "geosearch"
-  LANGUAGE plpgsql IMMUTABLE AS $$
-    DECLARE
-      -- constants:
-      "philimit" FLOAT := 84;    -- maximum latitude (needs to be less than 90)
-      "margin"   FLOAT := 1.0001;  -- slightly increase search area
-      -- NOTE: search area is increased by "margin", search radius gets
-      --       increased by sqrt("margin"); choose a value > 1.0 to avoid
-      --       floating point errors
-      "fixzero"  FLOAT := 0.0001;  -- small value > 0 to fix singularity
-      -- result:
-      "res"      "geosearch";
-      -- helper variables:
-      "rc3mar"   FLOAT;  -- ("radius_p")^2 / "c3", multiplied with "margin"
-      "subc02"   FLOAT;  -- 2 * ("c0" - "c2" * "rc3mar")
-      "b4"       FLOAT;  -- ("c2")^2
-      "b3"       FLOAT;  -- 2 * "c1" * "c2"
-      "b2"       FLOAT;  -- ("c1")^2 + "subc02" * "c2"
-      "b1"       FLOAT;  -- "subc02" * "c1"
-      "b0"       FLOAT;  -- ("c2")^2                   * ("rc3mar")^2 +
-                         -- 2 * "c0" * "c2" - ("c1")^2 * ("rc3mar")^1 +
-                         -- ("c0")^2                   * ("rc3mar")^0
-      "sqrtval"  FLOAT;  -- "b4" * ("latitude_p")^4 +
-                         -- "b3" * ("latitude_p")^3 +
-                         -- "b2" * ("latitude_p")^2 +
-                         -- "b1" * ("latitude_p")^1 +
-                         -- "b0" * ("latitude_p")^0
-      "phic"     FLOAT;  -- ( "c2" * (("latitude_p")^2 - "rc3mar") - "c0"
-                         --   + sqrt("sqrtval")
-                         -- ) / ( 2 * "c2" * "latitude_p" + "c1" )
-      "dlat"     FLOAT;  -- delta latitude in degrees = sqrt("rc3mar")
-      "dlon2"    FLOAT;  -- square of delta longitude
-      "dlon"     FLOAT;  -- delta longitude in degrees =
-                         -- sqrt(
-                         --   ( "rc3mar" - ("phic" - "latitude_p")^2 ) /
-                         --   ( "c2" * ("phic")^2 +
-                         --     "c1" * ("phic")^1 +
-                         --     "c0" )
-                         -- )
-      "lat_min"  FLOAT;
-      "lat_max"  FLOAT;
-      "lon_min"  FLOAT;
-      "lon_max"  FLOAT;
-    BEGIN
-      "res" := "geosearch"("latitude_p", "longitude_p");
-      IF "res" ISNULL THEN RETURN NULL; END IF;
-      IF "radius_p" ISNULL OR "radius_p" = 'Infinity'::FLOAT THEN
-        RETURN "res";
-      END IF;
-      "res"."dist" := "radius_p";
-      "rc3mar"  := "margin" * "radius_p" * "radius_p" / "res"."c3";
-      "subc02"  := 2 * ("res"."c0" - "res"."c2" * "rc3mar");
-      "b4"      := "res"."c2" * "res"."c2";
-      "b3"      := 2 * "res"."c1" * "res"."c2";
-      "b2"      := "res"."c1" * "res"."c1" + "subc02" * "res"."c2";
-      "b1"      := "subc02" * "res"."c1";
-      "b0"      := ( "b4" * "rc3mar" +
-                     2 * "res"."c0" * "res"."c2" - "res"."c1" * "res"."c1"
-                   ) * "rc3mar" + "res"."c0" * "res"."c0";
-      "sqrtval" := ( ( ( ( "b4"
-                         ) * "latitude_p" + "b3"
-                       ) * "latitude_p" + "b2"
-                     ) * "latitude_p" + "b1"
-                   ) * "latitude_p" + "b0";
-      IF "sqrtval" < 0 THEN
-        IF "latitude_p" >= 0 THEN "phic" := "philimit";
-        ELSE "phic" := -"philimit"; END IF;
-      ELSE
-        IF abs("latitude_p") <= "fixzero" THEN
-          "phic" := "latitude_p";
-        ELSE
-          "phic" := (
-            "res"."c2" * ("latitude_p" * "latitude_p" - "rc3mar")
-            - "res"."c0" + sqrt("sqrtval")
-          ) / (
-            2 * "res"."c2" * "latitude_p" + "res"."c1"
-          );
-          IF "phic" > "philimit" THEN "phic" := "philimit";
-          ELSIF "phic" < -"philimit" THEN "phic" := -"philimit"; END IF;
-        END IF;
-      END IF;
-      "dlat" := sqrt("rc3mar");
-      "dlon2" := (
-        ( "rc3mar" - ("phic" - "latitude_p")^2 ) /
-        ( ( "res"."c2" * "phic" + "res"."c1" ) * "phic" + "res"."c0" )
-      );
-      IF "dlon2" > 0 THEN "dlon" := sqrt("dlon2");
-      ELSE "dlon" := 0; END IF;
-      "lat_min" := "latitude_p" - "dlat";
-      "lat_max" := "latitude_p" + "dlat";
-      IF "lat_min" < -90 THEN "lat_min" := -90; END IF;
-      IF "lat_max" >  90 THEN "lat_max" :=  90; END IF;
-      "lon_min" := "longitude_p" - "dlon";
-      "lon_max" := "longitude_p" + "dlon";
-      IF "lon_min" < -180 THEN
-        IF "lon_max" > 180 THEN
-          "res"."bbox1" := box(
-            "geoindex"("lat_min", -180),
-            "geoindex"("lat_max", 180) );
-          "res"."bbox2" := NULL;
-        ELSE
-          "res"."bbox1" := box(
-            "geoindex"("lat_min", -180),
-            "geoindex"("lat_max", "lon_max") );
-          "res"."bbox2" := box(
-            "geoindex"("lat_min", "lon_min" + 360),
-            "geoindex"("lat_max", 180) );
-        END IF;
-      ELSIF "lon_max" > 180 THEN
-        "res"."bbox1" := box(
-          "geoindex"("lat_min", "lon_min"),
-          "geoindex"("lat_max", 180) );
-        "res"."bbox2" := box(
-          "geoindex"("lat_min", -180),
-          "geoindex"("lat_max", "lon_max" - 360) );
-      ELSE
-        "res"."bbox1" := box(
-          "geoindex"("lat_min", "lon_min"),
-          "geoindex"("lat_max", "lon_max") );
-        "res"."bbox2" := NULL;
-      END IF;
-      RETURN "res";
-    END;
-  $$;
-
-COMMENT ON FUNCTION "geosearch"
-  ( FLOAT, FLOAT, FLOAT )
-  IS 'Takes latitude, longitude (both in degrees), and a radius (in meters), and returns a "geoindex" structure suitable for searching and distance calculation';
-
-
-CREATE FUNCTION "geodist"
-  ( "geosearch_p" "geosearch",
-    "latitude_p"  FLOAT,
-    "longitude_p" FLOAT )
-  RETURNS FLOAT
-  LANGUAGE sql IMMUTABLE AS $$
-    SELECT sqrt(
-      "geosearch_p"."c3" * (
-        ("latitude_p" - "geosearch_p"."lat")^2 +
-        ( ( "geosearch_p"."c2" * "latitude_p" + "geosearch_p"."c1" )
-          * "latitude_p" + "geosearch_p"."c0" ) *
-        ( "longitude_p" +
-          CASE WHEN "longitude_p" - "geosearch_p"."lon" > 180
-          THEN -360 ELSE
-            CASE WHEN "longitude_p" - "geosearch_p"."lon" < -180
-            THEN 360
-            ELSE 0 END
-          END - "geosearch_p"."lon"
-        )^2
-      )
-    )
-  $$;
-
-COMMENT ON FUNCTION "geodist"
-  ( "geosearch", FLOAT, FLOAT )
-  IS 'Takes a "geosearch" structure as well as geographical coordinates in degrees and returns the distance on earth in meters';
-
-
-/* Usage of spatial indexing and distance calculation functions for points:
-
--- create table containing geographical coordinates in degrees:
-CREATE TABLE "t1" (
-        "id"            SERIAL4         PRIMARY KEY,
-        "latitude"      NUMERIC         NOT NULL,
-        "longitude"     NUMERIC         NOT NULL );
-
--- create an SP-GiST index (with default quad_point_ops operator class):
-CREATE INDEX "t1_geoindex" ON "t1" USING spgist (("geoindex"("latitude", "longitude")));
-
--- return results within 10,000 meters of Brandenburg Gate:
-SELECT "t1".*, "distance"
-  FROM "t1"
-  CROSS JOIN "geosearch"(52.5162746, 13.377704, 10000)
-  CROSS JOIN LATERAL "geodist"("geosearch", "latitude", "longitude") AS "distance"
-  WHERE (
-    "geoindex"("latitude", "longitude") <@ "geosearch"."bbox1" OR
-    "geoindex"("latitude", "longitude") <@ "geosearch"."bbox2" )
-  AND "distance" <= "geosearch"."dist";
-
-*/
-
-
-CREATE FUNCTION "polyindex"
-  ( "point_p" POINT )
-  RETURNS POLYGON
-  LANGUAGE sql IMMUTABLE STRICT AS $$
-    SELECT "point_p"::TEXT::POLYGON;
-  $$;
-
-COMMENT ON FUNCTION "polyindex"(POINT) IS 'Converts a point (with latitude in degrees as first value and longitude in degrees as second value) into a polygon suitable for GiST poly_ops indexing'; 
-
-
-CREATE FUNCTION "polyindex"
-  ( "latitude_p"  FLOAT,
-    "longitude_p" FLOAT )
-  RETURNS POLYGON
-  LANGUAGE sql IMMUTABLE STRICT AS $$
-    SELECT "polyindex"(point("latitude_p", "longitude_p"))
-  $$;
-
-COMMENT ON FUNCTION "polyindex"(POINT) IS 'Converts a point given as latitude and longitude in degrees into a polygon suitable for GiST poly_ops indexing'; 
-
-
-CREATE FUNCTION "polyindex"
-  ( "polygon_p" POLYGON )
-  RETURNS POLYGON
-  LANGUAGE sql IMMUTABLE STRICT AS $$
-    SELECT "polygon_p"
-  $$;
-
-COMMENT ON FUNCTION "polyindex"(POLYGON) IS 'Does nothing but returning the polygon unchanged (for GiST poly_ops indexing)'; 
-
-
-CREATE FUNCTION "polyindex"
-  ( "box_p" BOX )
-  RETURNS POLYGON
-  LANGUAGE sql IMMUTABLE STRICT AS $$
-    SELECT "box_p"::POLYGON
-  $$;
-
-COMMENT ON FUNCTION "polyindex"(POINT) IS 'Converts a box (with latitude in degrees as first value and longitude in degrees as second value in each point) into a polygon suitable for GiST poly_ops indexing';
-
-
-CREATE FUNCTION "polyindex"
-  ( "path_p" PATH )
-  RETURNS POLYGON
-  LANGUAGE plpgsql IMMUTABLE STRICT AS $$
-    DECLARE
-      "match_v"  TEXT[];
-      "points_v" TEXT[];
-      "idx1"     INTEGER;
-      "idx2"     INTEGER;
-    BEGIN
-      IF isclosed("path_p") THEN
-        RETURN "path_p"::POLYGON;
-      ELSE
-        "points_v" := '{}';
-        "idx1" := 0;
-        FOR "match_v" IN
-          SELECT regexp_matches("path_p"::TEXT, E'\\(([^()]*)\\)', 'g')
-        LOOP
-          "idx1" := "idx1" + 1;
-          "points_v"["idx1"] := "match_v"[1];
-        END LOOP;
-        "idx2" := "idx1";
-        LOOP
-          EXIT WHEN "idx1" < 3;
-          "idx1" := "idx1" - 1;
-          "idx2" := "idx2" + 1;
-          "points_v"["idx2"] := "points_v"["idx1"];
-        END LOOP;
-        RETURN array_to_string("points_v", ',')::POLYGON;
-      END IF;
-    END;
-  $$;
-
-COMMENT ON FUNCTION "polyindex"(POINT) IS 'Converts a path (with latitude in degrees as first value and longitude in degrees as second value in each point) into a polygon suitable for GiST poly_ops indexing; NOTE: closed PATHs where isclosed(path)=TRUE represent filled polygons, use an open PATH with the last point equal to the first point (e.g. "[1,1,3,4,6,6,1,1]") for a non-filled structure';
-
-
-CREATE FUNCTION "polyindex"
-  ( "lseg_p" LSEG )
-  RETURNS POLYGON
-  LANGUAGE sql IMMUTABLE STRICT AS $$
-    SELECT "polyindex"("lseg_p"::TEXT::PATH)
-  $$;
-
-COMMENT ON FUNCTION "polyindex"(POINT) IS 'Converts a line segment (with latitude in degrees as first value and longitude in degrees as second value in each point) into a polygon suitable for GiST poly_ops indexing';
-
-
-CREATE FUNCTION "geoshift180"
-  ( "point_p" POINT )
-  RETURNS POINT
-  LANGUAGE sql IMMUTABLE STRICT AS $$
-    SELECT CASE WHEN "point_p" <^ '0,0'::POINT THEN
-      "point_p" + '0,360'::POINT
-    ELSE
-      "point_p" - '0,360'::POINT
-    END 
-  $$;
-
-COMMENT ON FUNCTION "geoshift180"(POINT) IS 'Returns a point (latitude and longitude in degrees) with its longitude translated by 360 degress to allow for searches crossing the 180th meridian';
-
-
-CREATE FUNCTION "geoshift180"
-  ( "polygon_p" POLYGON )
-  RETURNS POLYGON
-  LANGUAGE sql IMMUTABLE STRICT AS $$
-    SELECT CASE WHEN center("polygon_p"::CIRCLE) <^ '0,0'::POINT THEN
-      ("polygon_p"::PATH + '0,360'::POINT)::POLYGON
-    ELSE
-      ("polygon_p"::PATH - '0,360'::POINT)::POLYGON
-    END 
-  $$;
-
-COMMENT ON FUNCTION "geoshift180"(POLYGON) IS 'Returns a polygon (latitude and longitude in degrees) with its longitude translated by 360 degress to allow for searches crossing the 180th meridian';
-
-
-CREATE FUNCTION "polysearch"
-  ( "geosearch_p" "geosearch",
-    "steps_p"     INTEGER = 24 )
-  RETURNS POLYGON
-  LANGUAGE plpgsql IMMUTABLE STRICT AS $$
-    DECLARE
-      "philimit"  FLOAT := 84;   -- maximum latitude (needs to be less than 90)
-      "halfsteps" INTEGER;
-      "step"      INTEGER := 0;
-      "angle"     FLOAT;
-      "dlat"      FLOAT := "geosearch_p"."dist" / sqrt("geosearch_p"."c3");
-      "lat"       FLOAT;
-      "dlon"      FLOAT;
-      "coords"    TEXT[];
-    BEGIN
-      IF "steps_p" < 4 OR "steps_p" % 2 != 0 THEN
-        RAISE EXCEPTION 'Invalid step count';
-      END IF;
-      "halfsteps" := "steps_p" / 2;
-      LOOP
-        "angle" := 2.0 * pi() * "step" / "steps_p";
-        "lat"   := "geosearch_p"."lat" + "dlat" * cos("angle");
-        IF    "lat" >  "philimit" THEN "lat" :=  "philimit";
-        ELSIF "lat" < -"philimit" THEN "lat" := -"philimit";
-        END IF;
-        "dlon"  := "dlat" * sin("angle") / sqrt(
-          ("geosearch_p"."c2" * "lat" + "geosearch_p"."c1") * "lat" +
-          "geosearch_p"."c0" );
-        "coords"[2*"step"+1] := "lat";
-        "coords"[2*"step"+2] := "geosearch_p"."lon" + "dlon";
-        EXIT WHEN "step" >= "halfsteps";
-        IF "step" > 0 THEN
-          "coords"[2*("steps_p"-"step")+1] := "lat";
-          "coords"[2*("steps_p"-"step")+2] := "geosearch_p"."lon" - "dlon";
-        END IF;
-        "step" := "step" + 1;
-      END LOOP;
-      RETURN array_to_string("coords", ',')::POLYGON;
-    END;
-  $$;
-
-COMMENT ON FUNCTION "polysearch"
-  ("geosearch", INTEGER)
-  IS 'Returns a polygon approximating the search circle represented by a given "geosearch" structure; The optional second parameter denotes the number of vertices (defaults to 24)';
-
-
-CREATE FUNCTION "polysearch"
-  ( "latitude_p"  FLOAT,
-    "longitude_p" FLOAT,
-    "radius_p"    FLOAT,
-    "steps_p"     INTEGER = 24 )
-  RETURNS POLYGON
-  LANGUAGE plpgsql IMMUTABLE STRICT AS $$
-    DECLARE
-      "geosearch_v" "geosearch";
-    BEGIN
-      "geosearch_v" := "geosearch"("latitude_p", "longitude_p");
-      "geosearch_v"."dist" := "radius_p";
-      RETURN "polysearch"("geosearch_v", "steps_p");
-    END;
-  $$;
-
-COMMENT ON FUNCTION "polysearch"
-  ("geosearch", INTEGER)
-  IS 'Returns a polygon approximating a search circle around a point given as latitude and longitude in degrees as well as the radius in meters; The optional second parameter denotes the number of vertices (defaults to 24)';
-
-
-/* Usage of spatial indexing for other basic geometric objects:
-
--- create table containing geographical coordinates in degrees:
-CREATE TABLE "t2" (
-        "id"            SERIAL4         PRIMARY KEY,
-        "geometry"      PATH );
-
--- create a GiST (not SP-GiST!) index (with default poly_ops operator class):
-CREATE INDEX "t2_geoindex" ON "t2" USING gist (("polyindex"("geometry")));
-
--- return results within 10,000 meters of Brandenburg Gate:
--- NOTE: use && operator for overlapping, use <@ operator for containment
-SELECT "t2".*
-  FROM "t2"
-  CROSS JOIN "polysearch"(52.5162746, 13.377704, 10000) AS "poly1"
-  CROSS JOIN LATERAL "geoshift180"("poly1") AS "poly2"
-  WHERE (
-    "polyindex"("geometry") && "poly1" OR
-    "polyindex"("geometry") && "poly2" );
-
-*/
-
-
-CREATE FUNCTION "scattered_polygon_contains_point"
-  ( "scattered_polygon_p" POLYGON[],
-    "point_p"             POINT )
-  RETURNS BOOLEAN
-  LANGUAGE sql IMMUTABLE STRICT AS $$
-    SELECT count(1) % 2 = 1
-      FROM unnest("scattered_polygon_p") AS "entry"
-      WHERE "entry" @> "point_p"
-  $$;
-
-COMMENT ON FUNCTION "scattered_polygon_contains_point"
-  ( POLYGON[], POINT )
-  IS 'Takes a scattered (or hollow) polygon represented as an array of polygons and, as a second argument, a point; returns TRUE if the number of polygons in which the point is contained is odd';
-
-
-CREATE FUNCTION "scattered_polygon_contains_point"
-  ( "scattered_polygon_p" POLYGON[],
-    "point_x_p"           FLOAT,
-    "point_y_p"           FLOAT )
-  RETURNS BOOLEAN
-  LANGUAGE sql IMMUTABLE STRICT AS $$
-    SELECT "scattered_polygon_contains_point"(
-      "scattered_polygon_p",
-      point("point_x_p", "point_y_p")
-    )
-  $$;
-
-COMMENT ON FUNCTION "scattered_polygon_contains_point"
-  ( POLYGON[], FLOAT, FLOAT )
-  IS 'Takes a scattered (or hollow) polygon represented as an array of polygons and, as second and third arguments, two coordinates representing a point; returns TRUE if the number of polygons in which the point is contained is odd';
-
-
-CREATE FUNCTION "scattered_polygon_bound_box"
-  ( "scattered_polygon_p" POLYGON[] )
-  RETURNS BOX
-  LANGUAGE plpgsql IMMUTABLE STRICT AS $$
-    DECLARE
-      "first_v"     BOOLEAN;
-      "bound_box_v" BOX;
-      "polygon_v"   POLYGON;
-    BEGIN
-      "first_v" := TRUE;
-      FOR "polygon_v" IN SELECT * FROM unnest("scattered_polygon_p") LOOP
-        IF "first_v" THEN
-          "bound_box_v" := box("polygon_v");
-          "first_v" := FALSE;
-        ELSE
-          "bound_box_v" := bound_box("bound_box_v", box("polygon_v"));
-        END IF;
-      END LOOP;
-      RETURN "bound_box_v";
-    END;
-  $$;
-
-COMMENT ON FUNCTION "scattered_polygon_bound_box"
-  ( POLYGON[] )
-  IS 'Takes a scattered (or hollow) polygon represented as an array of polygons and returns a bounding box';
-
-
-/* Usage of spatial indexing for scattered (or hollow) polygons:
-
--- create table containing geographical coordinates in degrees:
-CREATE TABLE "t3" (
-        "id"            SERIAL4         PRIMARY KEY,
-        "region"        POLYGON[] );
-
--- create a GiST (not SP-GiST!) index (with default box_ops operator class):
-CREATE INDEX "t3_geoindex" ON "t3" USING gist (("scattered_polygon_bound_box"("region")));
-
--- return rows containing Brandenburg Gate's location:
-SELECT "t3".*
-  FROM "t3"
-  CROSS JOIN point(52.5162746, 13.377704) AS "point1"
-  CROSS JOIN LATERAL "geoshift180"("point1") AS "point2"
-  WHERE (
-    "scattered_polygon_contains_point"("region", "point1") OR
-    "scattered_polygon_contains_point"("region", "point2") );
-
-*/
 
 
 
@@ -717,8 +139,7 @@ CREATE TABLE "member" (
         "external_posts"        TEXT,
         "formatting_engine"     TEXT,
         "statement"             TEXT,
-        "latitude"              NUMERIC,
-        "longitude"             NUMERIC,
+        "location"              EPOINT,
         "text_search_data"      TSVECTOR,
         CONSTRAINT "active_requires_activated_and_last_activity"
           CHECK ("active" = FALSE OR ("activated" NOTNULL AND "last_activity" NOTNULL)),
@@ -731,12 +152,10 @@ CREATE TABLE "member" (
         CONSTRAINT "notification_dow_requires_notification_hour"
           CHECK ("notification_dow" ISNULL OR "notification_hour" NOTNULL),
         CONSTRAINT "name_not_null_if_activated"
-          CHECK ("activated" ISNULL OR "name" NOTNULL),
-        CONSTRAINT "latitude_and_lontitude_both_null_or_not_null"
-          CHECK (("latitude" NOTNULL) = ("longitude" NOTNULL)) );
+          CHECK ("activated" ISNULL OR "name" NOTNULL) );
 CREATE INDEX "member_authority_login_idx" ON "member" ("authority_login");
 CREATE INDEX "member_active_idx" ON "member" ("active");
-CREATE INDEX "member_geolocation_idx" ON "member" USING spgist (("geoindex"("latitude", "longitude")));
+CREATE INDEX "member_location_idx" ON "member" USING gist ("location");
 CREATE INDEX "member_text_search_data_idx" ON "member" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "member"
@@ -789,8 +208,7 @@ COMMENT ON COLUMN "member"."external_memberships" IS 'Other organizations the me
 COMMENT ON COLUMN "member"."external_posts"       IS 'Posts (offices) outside the organization';
 COMMENT ON COLUMN "member"."formatting_engine"    IS 'Allows different formatting engines (i.e. wiki formats) to be used for "member"."statement"';
 COMMENT ON COLUMN "member"."statement"            IS 'Freely chosen text of the member for his/her profile';
-COMMENT ON COLUMN "member"."latitude"             IS 'Latitude (in degrees) of member''s location';
-COMMENT ON COLUMN "member"."longitude"            IS 'Longitude (in degrees) of member''s location';
+COMMENT ON COLUMN "member"."location"             IS 'Geographic location on earth';
 
 
 CREATE TABLE "member_history" (
@@ -1034,12 +452,12 @@ CREATE TABLE "unit" (
         "description"           TEXT            NOT NULL DEFAULT '',
         "external_reference"    TEXT,
         "member_count"          INT4,
-        "region"                POLYGON[],
+        "region"                ECLUSTER,
         "text_search_data"      TSVECTOR );
 CREATE INDEX "unit_root_idx" ON "unit" ("id") WHERE "parent_id" ISNULL;
 CREATE INDEX "unit_parent_id_idx" ON "unit" ("parent_id");
 CREATE INDEX "unit_active_idx" ON "unit" ("active");
-CREATE INDEX "unit_geolocation_idx" ON "unit" USING gist (("scattered_polygon_bound_box"("region")));
+CREATE INDEX "unit_region_idx" ON "unit" USING gist ("region");
 CREATE INDEX "unit_text_search_data_idx" ON "unit" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "unit"
@@ -1083,11 +501,11 @@ CREATE TABLE "area" (
         "name"                  TEXT            NOT NULL,
         "description"           TEXT            NOT NULL DEFAULT '',
         "external_reference"    TEXT,
-        "region"                POLYGON[],
+        "region"                ECLUSTER,
         "text_search_data"      TSVECTOR );
 CREATE INDEX "area_unit_id_idx" ON "area" ("unit_id");
 CREATE INDEX "area_active_idx" ON "area" ("active");
-CREATE INDEX "area_geolocation_idx" ON "area" USING gist (("scattered_polygon_bound_box"("region")));
+CREATE INDEX "area_region_idx" ON "area" USING gist ("region");
 CREATE INDEX "area_text_search_data_idx" ON "area" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "area"
@@ -1318,10 +736,8 @@ CREATE TABLE "initiative" (
         "revoked"               TIMESTAMPTZ,
         "revoked_by_member_id"  INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "suggested_initiative_id" INT4          REFERENCES "initiative" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "latitude1"             NUMERIC,
-        "longitude1"            NUMERIC,
-        "latitude2"             NUMERIC,
-        "longitude2"            NUMERIC,
+        "location1"             EPOINT,
+        "location2"             EPOINT,
         "external_reference"    TEXT,
         "admitted"              BOOLEAN,
         "supporter_count"                    INT4,
@@ -1349,12 +765,8 @@ CREATE TABLE "initiative" (
           CHECK (("revoked" NOTNULL) = ("revoked_by_member_id" NOTNULL)),
         CONSTRAINT "non_revoked_initiatives_cant_suggest_other"
           CHECK ("revoked" NOTNULL OR "suggested_initiative_id" ISNULL),
-        CONSTRAINT "latitude1_and_lontitude1_both_null_or_not_null"
-          CHECK (("latitude1" NOTNULL) = ("longitude1" NOTNULL)),
-        CONSTRAINT "latitude2_and_longitude2_both_null_or_not_null"
-          CHECK (("latitude2" NOTNULL) = ("longitude2" NOTNULL)),
-        CONSTRAINT "latutude2_requires_latitude1"
-          CHECK ("latitude2" ISNULL OR "latitude1" NOTNULL),
+        CONSTRAINT "location2_requires_location1"
+          CHECK ("location2" ISNULL OR "location1" NOTNULL),
         CONSTRAINT "revoked_initiatives_cant_be_admitted"
           CHECK ("revoked" ISNULL OR "admitted" ISNULL),
         CONSTRAINT "non_admitted_initiatives_cant_contain_voting_results" CHECK (
@@ -1376,8 +788,8 @@ CREATE TABLE "initiative" (
         CONSTRAINT "unique_rank_per_issue" UNIQUE ("issue_id", "rank") );
 CREATE INDEX "initiative_created_idx" ON "initiative" ("created");
 CREATE INDEX "initiative_revoked_idx" ON "initiative" ("revoked");
-CREATE INDEX "initiative_geolocation1_idx" ON "initiative" USING spgist (("geoindex"("latitude1", "longitude1")));
-CREATE INDEX "initiative_geolocation2_idx" ON "initiative" USING spgist (("geoindex"("latitude2", "longitude2")));
+CREATE INDEX "initiative_location1_idx" ON "initiative" USING gist ("location1");
+CREATE INDEX "initiative_location2_idx" ON "initiative" USING gist ("location2");
 CREATE INDEX "initiative_text_search_data_idx" ON "initiative" USING gin ("text_search_data");
 CREATE INDEX "initiative_draft_text_search_data_idx" ON "initiative" USING gin ("draft_text_search_data");
 CREATE TRIGGER "update_text_search_data"
@@ -1390,10 +802,8 @@ COMMENT ON TABLE "initiative" IS 'Group of members publishing drafts for resolut
 COMMENT ON COLUMN "initiative"."polling"                IS 'Initiative does not need to pass the initiative quorum (see "policy"."polling")';
 COMMENT ON COLUMN "initiative"."revoked"                IS 'Point in time, when one initiator decided to revoke the initiative';
 COMMENT ON COLUMN "initiative"."revoked_by_member_id"   IS 'Member, who decided to revoke the initiative';
-COMMENT ON COLUMN "initiative"."latitude1"              IS 'Latitude (in degrees) of initiative (automatically copied from most recent draft)';
-COMMENT ON COLUMN "initiative"."longitude1"             IS 'Longitude (in degrees) of initiative (automatically copied from most recent draft)';
-COMMENT ON COLUMN "initiative"."latitude2"              IS 'Latitude (in degrees) of initiative''s second marker (automatically copied from most recent draft)';
-COMMENT ON COLUMN "initiative"."longitude2"             IS 'Longitude (in degrees) of initiative''s second marker (automatically copied from most recent draft)';
+COMMENT ON COLUMN "initiative"."location1"              IS 'Geographic location of initiative (automatically copied from most recent draft)';
+COMMENT ON COLUMN "initiative"."location2"              IS 'Geographic location of initiative''s second marker (automatically copied from most recent draft)';
 COMMENT ON COLUMN "initiative"."external_reference"     IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "initiative"."admitted"               IS 'TRUE, if initiative reaches the "initiative_quorum" when freezing the issue';
 COMMENT ON COLUMN "initiative"."supporter_count"                    IS 'Calculated from table "direct_supporter_snapshot"';
@@ -1462,22 +872,16 @@ CREATE TABLE "draft" (
         "author_id"             INT4            NOT NULL REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "formatting_engine"     TEXT,
         "content"               TEXT            NOT NULL,
-        "latitude1"             NUMERIC,
-        "longitude1"            NUMERIC,
-        "latitude2"             NUMERIC,
-        "longitude2"            NUMERIC,
+        "location1"             EPOINT,
+        "location2"             EPOINT,
         "external_reference"    TEXT,
         "text_search_data"      TSVECTOR,
-        CONSTRAINT "latitude1_and_lontitude1_both_null_or_not_null"
-          CHECK (("latitude1" NOTNULL) = ("longitude1" NOTNULL)),
-        CONSTRAINT "latitude2_and_longitude2_both_null_or_not_null"
-          CHECK (("latitude2" NOTNULL) = ("longitude2" NOTNULL)),
-        CONSTRAINT "latutude2_requires_latitude1"
-          CHECK ("latitude2" ISNULL OR "latitude1" NOTNULL) );
+        CONSTRAINT "location2_requires_location1"
+          CHECK ("location2" ISNULL OR "location1" NOTNULL) );
 CREATE INDEX "draft_created_idx" ON "draft" ("created");
 CREATE INDEX "draft_author_id_created_idx" ON "draft" ("author_id", "created");
-CREATE INDEX "draft_geolocation1_idx" ON "draft" USING spgist (("geoindex"("latitude1", "longitude1")));
-CREATE INDEX "draft_geolocation2_idx" ON "draft" USING spgist (("geoindex"("latitude2", "longitude2")));
+CREATE INDEX "draft_location1_idx" ON "draft" USING gist ("location1");
+CREATE INDEX "draft_location2_idx" ON "draft" USING gist ("location2");
 CREATE INDEX "draft_text_search_data_idx" ON "draft" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "draft"
@@ -1488,10 +892,8 @@ COMMENT ON TABLE "draft" IS 'Drafts of initiatives to solve issues; Frontends mu
 
 COMMENT ON COLUMN "draft"."formatting_engine"  IS 'Allows different formatting engines (i.e. wiki formats) to be used';
 COMMENT ON COLUMN "draft"."content"            IS 'Text of the draft in a format depending on the field "formatting_engine"';
-COMMENT ON COLUMN "draft"."latitude1"          IS 'Latitude (in degrees) of initiative (automatically copied to "initiative" table if draft is most recent)';
-COMMENT ON COLUMN "draft"."longitude1"         IS 'Longitude (in degrees) of initiative (automatically copied to "initiative" table if draft is most recent)';
-COMMENT ON COLUMN "draft"."latitude2"          IS 'Latitude (in degrees) of initiative''s second marker (automatically copied to "initiative" table if draft is most recent)';
-COMMENT ON COLUMN "draft"."longitude2"         IS 'Longitude (in degrees) of initiative''s second marker (automatically copied to "initiative" table if draft is most recent)';
+COMMENT ON COLUMN "draft"."location1"          IS 'Geographic location of initiative (automatically copied to "initiative" table if draft is most recent)';
+COMMENT ON COLUMN "draft"."location2"          IS 'Geographic location of initiative''s second marker (automatically copied to "initiative" table if draft is most recent)';
 COMMENT ON COLUMN "draft"."external_reference" IS 'Opaque data field to store an external reference';
 
 
@@ -1515,10 +917,8 @@ CREATE TABLE "suggestion" (
         "name"                  TEXT            NOT NULL,
         "formatting_engine"     TEXT,
         "content"               TEXT            NOT NULL DEFAULT '',
-        "latitude1"             NUMERIC,
-        "longitude1"            NUMERIC,
-        "latitude2"             NUMERIC,
-        "longitude2"            NUMERIC,
+        "location1"             EPOINT,
+        "location2"             EPOINT,
         "external_reference"    TEXT,
         "text_search_data"      TSVECTOR,
         "minus2_unfulfilled_count" INT4,
@@ -1530,16 +930,12 @@ CREATE TABLE "suggestion" (
         "plus2_unfulfilled_count"  INT4,
         "plus2_fulfilled_count"    INT4,
         "proportional_order"    INT4,
-        CONSTRAINT "latitude1_and_lontitude1_both_null_or_not_null"
-          CHECK (("latitude1" NOTNULL) = ("longitude1" NOTNULL)),
-        CONSTRAINT "latitude2_and_longitude2_both_null_or_not_null"
-          CHECK (("latitude2" NOTNULL) = ("longitude2" NOTNULL)),
-        CONSTRAINT "latutude2_requires_latitude1"
-          CHECK ("latitude2" ISNULL OR "latitude1" NOTNULL) );
+        CONSTRAINT "location2_requires_location1"
+          CHECK ("location2" ISNULL OR "location1" NOTNULL) );
 CREATE INDEX "suggestion_created_idx" ON "suggestion" ("created");
 CREATE INDEX "suggestion_author_id_created_idx" ON "suggestion" ("author_id", "created");
-CREATE INDEX "suggestion_geolocation1_idx" ON "suggestion" USING spgist (("geoindex"("latitude1", "longitude1")));
-CREATE INDEX "suggestion_geolocation2_idx" ON "suggestion" USING spgist (("geoindex"("latitude2", "longitude2")));
+CREATE INDEX "suggestion_location1_idx" ON "suggestion" USING gist ("location1");
+CREATE INDEX "suggestion_location2_idx" ON "suggestion" USING gist ("location2");
 CREATE INDEX "suggestion_text_search_data_idx" ON "suggestion" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "suggestion"
@@ -1550,10 +946,8 @@ CREATE TRIGGER "update_text_search_data"
 COMMENT ON TABLE "suggestion" IS 'Suggestions to initiators, to change the current draft; must not be deleted explicitly, as they vanish automatically if the last opinion is deleted';
 
 COMMENT ON COLUMN "suggestion"."draft_id"                 IS 'Draft, which the author has seen when composing the suggestion; should always be set by a frontend, but defaults to current draft of the initiative (implemented by trigger "default_for_draft_id")';
-COMMENT ON COLUMN "suggestion"."latitude1"                IS 'Latitude (in degrees) of suggestion';
-COMMENT ON COLUMN "suggestion"."longitude1"               IS 'Longitude (in degrees) of suggestion';
-COMMENT ON COLUMN "suggestion"."latitude2"                IS 'Latitude (in degrees) of suggestion''s second marker';
-COMMENT ON COLUMN "suggestion"."longitude2"               IS 'Longitude (in degrees) of suggestion''s second marker';
+COMMENT ON COLUMN "suggestion"."location1"                IS 'Geographic location of suggestion';
+COMMENT ON COLUMN "suggestion"."location2"                IS 'Geographic location of suggestion''s second marker';
 COMMENT ON COLUMN "suggestion"."external_reference"       IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "suggestion"."minus2_unfulfilled_count" IS 'Calculated from table "direct_supporter_snapshot", not requiring informed supporters';
 COMMENT ON COLUMN "suggestion"."minus2_fulfilled_count"   IS 'Calculated from table "direct_supporter_snapshot", not requiring informed supporters';
@@ -2552,10 +1946,8 @@ CREATE FUNCTION "copy_current_draft_data"
       PERFORM NULL FROM "initiative" WHERE "id" = "initiative_id_p"
         FOR UPDATE;
       UPDATE "initiative" SET
-        "latitude1"  = "draft"."latitude1",
-        "longitude1" = "draft"."longitude1",
-        "latitude2"  = "draft"."latitude2",
-        "longitude2" = "draft"."longitude2",
+        "location1"  = "draft"."location1",
+        "location2"  = "draft"."location2",
         "draft_text_search_data" = "draft"."text_search_data"
         FROM "current_draft" AS "draft"
         WHERE "initiative"."id" = "initiative_id_p"
