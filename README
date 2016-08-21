@@ -1,4 +1,8 @@
 
+LiquidFeedback Core requires the pgLatLon extension to be installed.
+This extension may be obtained from:
+http://www.public-software-group.org/pgLatLon
+
 Setup the database:
 $ createdb liquid_feedback
 $ psql -v ON_ERROR_STOP=1 -f core.sql liquid_feedback
