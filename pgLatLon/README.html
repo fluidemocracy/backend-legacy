@@ -8,7 +8,7 @@ for the WGS-84 spheroid.</p>
 <p>While many other spatial databases still use imprecise bounding boxes for many
 operations, pgLatLon supports more precise geometric calculations for all
 implemented operators. Efficient indexing of geometric objects is provided
-using fractal indicies. Optimizations on bit level (including logarithmic
+using fractal indices. Optimizations on bit level (including logarithmic
 compression) allow for a highly memory-efficient non-overlapping index suitable
 for huge datasets.</p>
 
@@ -161,13 +161,13 @@ be repeated as last point in the list. Polygons are filled, outlines are not.</p
 
 <p>Two kinds of indices are supported: B-tree and GiST indices.</p>
 
-<h4>B-tree indicies</h4>
+<h4>B-tree indices</h4>
 
 <p>A B-tree index can be used for simple equality searches and is supported by the
 <code>epoint</code>, <code>ebox</code>, and <code>ecircle</code> data types. B-tree indices can not be used for
 geographic searches.</p>
 
-<h4>GiST indicies</h4>
+<h4>GiST indices</h4>
 
 <p>For geographic searches, GiST indices must be used. The <code>epoint</code>, <code>ecircle</code>,
 and <code>ecluster</code> data types support GiST indexing. A GiST index for geographic
@@ -180,10 +180,10 @@ searches can be created as follows:</p>
 CREATE INDEX name_of_index ON tbl USING gist (loc);
 </code></pre>
 
-<p>GiST indicies also support nearest neighbor searches when using the distance
+<p>GiST indices also support nearest neighbor searches when using the distance
 operator (<code>&lt;-&gt;</code>) in the ORDER BY clause.</p>
 
-<h4>Indicies on other data types (e.g. GeoJSON)</h4>
+<h4>Indices on other data types (e.g. GeoJSON)</h4>
 
 <p>Note that further types can be indexed by using an index on an expression with
 a conversion function. One conversion function provided by pgLatLon is the

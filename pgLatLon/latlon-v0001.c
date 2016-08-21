@@ -2384,7 +2384,7 @@ Datum pgl_gist_union(PG_FUNCTION_ARGS) {
   PG_RETURN_POINTER(out);
 }
 
-/* GiST "compress" support function for indicies on points */
+/* GiST "compress" support function for indicis on points */
 PG_FUNCTION_INFO_V1(pgl_gist_compress_epoint);
 Datum pgl_gist_compress_epoint(PG_FUNCTION_ARGS) {
   GISTENTRY *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
@@ -2411,7 +2411,7 @@ Datum pgl_gist_compress_epoint(PG_FUNCTION_ARGS) {
   PG_RETURN_POINTER(retval);
 }
 
-/* GiST "compress" support function for indicies on circles */
+/* GiST "compress" support function for indicis on circles */
 PG_FUNCTION_INFO_V1(pgl_gist_compress_ecircle);
 Datum pgl_gist_compress_ecircle(PG_FUNCTION_ARGS) {
   GISTENTRY *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
@@ -2438,7 +2438,7 @@ Datum pgl_gist_compress_ecircle(PG_FUNCTION_ARGS) {
   PG_RETURN_POINTER(retval);
 }
 
-/* GiST "compress" support function for indicies on clusters */
+/* GiST "compress" support function for indices on clusters */
 PG_FUNCTION_INFO_V1(pgl_gist_compress_ecluster);
 Datum pgl_gist_compress_ecluster(PG_FUNCTION_ARGS) {
   GISTENTRY *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
@@ -2467,7 +2467,7 @@ Datum pgl_gist_compress_ecluster(PG_FUNCTION_ARGS) {
   PG_RETURN_POINTER(retval);
 }
 
-/* GiST "decompress" support function for indicies */
+/* GiST "decompress" support function for indices */
 PG_FUNCTION_INFO_V1(pgl_gist_decompress);
 Datum pgl_gist_decompress(PG_FUNCTION_ARGS) {
   /* return passed pointer without transformation */
