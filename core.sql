@@ -3,10 +3,10 @@
 
 BEGIN;
 
-CREATE EXTENSION latlon;  -- load pgLatLon extenstion
+CREATE EXTENSION IF NOT EXISTS latlon;  -- load pgLatLon extenstion
 
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('4.0.0', 4, 0, 0))
+  SELECT * FROM (VALUES ('4.0-dev', 4, 0, -1))
   AS "subquery"("string", "major", "minor", "revision");
 
 
@@ -65,13 +65,15 @@ COMMENT ON COLUMN "temporary_transaction_data"."txid" IS 'Value returned by func
 
 
 CREATE TABLE "system_setting" (
-        "member_ttl"            INTERVAL );
+        "member_ttl"            INTERVAL,
+        "snapshot_retention"    INTERVAL );
 CREATE UNIQUE INDEX "system_setting_singleton_idx" ON "system_setting" ((1));
 
 COMMENT ON TABLE "system_setting" IS 'This table contains only one row with different settings in each column.';
 COMMENT ON INDEX "system_setting_singleton_idx" IS 'This index ensures that "system_setting" only contains one row maximum.';
 
-COMMENT ON COLUMN "system_setting"."member_ttl" IS 'Time after members get their "active" flag set to FALSE, if they do not show any activity.';
+COMMENT ON COLUMN "system_setting"."member_ttl"          IS 'Time after members get their "active" flag set to FALSE, if they do not show any activity.';
+COMMENT ON COLUMN "system_setting"."snapshot_retention" IS 'Unreferenced snapshots are retained for the given period of time after creation; set to NULL for infinite retention.';
 
 
 CREATE TABLE "contingent" (
@@ -124,22 +126,7 @@ CREATE TABLE "member" (
         "name"                  TEXT            UNIQUE,
         "identification"        TEXT            UNIQUE,
         "authentication"        TEXT,
-        "organizational_unit"   TEXT,
-        "internal_posts"        TEXT,
-        "realname"              TEXT,
-        "birthday"              DATE,
-        "address"               TEXT,
-        "email"                 TEXT,
-        "xmpp_address"          TEXT,
-        "website"               TEXT,
-        "phone"                 TEXT,
-        "mobile_phone"          TEXT,
-        "profession"            TEXT,
-        "external_memberships"  TEXT,
-        "external_posts"        TEXT,
-        "formatting_engine"     TEXT,
-        "statement"             TEXT,
-        "location"              EPOINT,
+        "location"              JSONB,
         "text_search_data"      TSVECTOR,
         CONSTRAINT "active_requires_activated_and_last_activity"
           CHECK ("active" = FALSE OR ("activated" NOTNULL AND "last_activity" NOTNULL)),
@@ -155,14 +142,13 @@ CREATE TABLE "member" (
           CHECK ("activated" ISNULL OR "name" NOTNULL) );
 CREATE INDEX "member_authority_login_idx" ON "member" ("authority_login");
 CREATE INDEX "member_active_idx" ON "member" ("active");
-CREATE INDEX "member_location_idx" ON "member" USING gist ("location");
+CREATE INDEX "member_location_idx" ON "member" USING gist ((GeoJSON_to_ecluster("location")));
 CREATE INDEX "member_text_search_data_idx" ON "member" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "member"
   FOR EACH ROW EXECUTE PROCEDURE
   tsvector_update_trigger('text_search_data', 'pg_catalog.simple',
-    "name", "identification", "organizational_unit", "internal_posts",
-    "realname", "external_memberships", "external_posts", "statement" );
+    "name", "identification");
 
 COMMENT ON TABLE "member" IS 'Users of the system, e.g. members of an organization';
 
@@ -200,18 +186,10 @@ COMMENT ON COLUMN "member"."password_reset_secret_expiry" IS 'Date/time until th
 COMMENT ON COLUMN "member"."name"                 IS 'Distinct name of the member, may be NULL if account has not been activated yet';
 COMMENT ON COLUMN "member"."identification"       IS 'Optional identification number or code of the member';
 COMMENT ON COLUMN "member"."authentication"       IS 'Information about how this member was authenticated';
-COMMENT ON COLUMN "member"."organizational_unit"  IS 'Branch or division of the organization the member belongs to';
-COMMENT ON COLUMN "member"."internal_posts"       IS 'Posts (offices) of the member inside the organization';
-COMMENT ON COLUMN "member"."realname"             IS 'Real name of the member, may be identical with "name"';
-COMMENT ON COLUMN "member"."email"                IS 'Published email address of the member; not used for system notifications';
-COMMENT ON COLUMN "member"."external_memberships" IS 'Other organizations the member is involved in';
-COMMENT ON COLUMN "member"."external_posts"       IS 'Posts (offices) outside the organization';
-COMMENT ON COLUMN "member"."formatting_engine"    IS 'Allows different formatting engines (i.e. wiki formats) to be used for "member"."statement"';
-COMMENT ON COLUMN "member"."statement"            IS 'Freely chosen text of the member for his/her profile';
-COMMENT ON COLUMN "member"."location"             IS 'Geographic location on earth';
+COMMENT ON COLUMN "member"."location"             IS 'Geographic location on earth as GeoJSON object';
 
 
-CREATE TABLE "member_history" (
+CREATE TABLE "member_history" (  -- TODO: redundancy with new "event" table
         "id"                    SERIAL8         PRIMARY KEY,
         "member_id"             INT4            NOT NULL REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "until"                 TIMESTAMPTZ     NOT NULL DEFAULT now(),
@@ -223,6 +201,26 @@ COMMENT ON TABLE "member_history" IS 'Filled by trigger; keeps information about
 
 COMMENT ON COLUMN "member_history"."id"    IS 'Primary key, which can be used to sort entries correctly (and time warp resistant)';
 COMMENT ON COLUMN "member_history"."until" IS 'Timestamp until the data was valid';
+
+
+CREATE TABLE "member_profile" (
+        "member_id"             INT4            PRIMARY KEY REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "formatting_engine"     TEXT,
+        "statement"             TEXT,
+        "profile"               JSONB,
+        "profile_text_data"     TEXT,
+        "text_search_data"      TSVECTOR );
+CREATE INDEX "member_profile_text_search_data_idx" ON "member_profile" USING gin ("text_search_data");
+CREATE TRIGGER "update_text_search_data"
+  BEFORE INSERT OR UPDATE ON "member_profile"
+  FOR EACH ROW EXECUTE PROCEDURE
+  tsvector_update_trigger('text_search_data', 'pg_catalog.simple',
+    'statement', 'profile_text_data');
+
+COMMENT ON COLUMN "member_profile"."formatting_engine" IS 'Allows different formatting engines (i.e. wiki formats) to be used for "member_profile"."statement"';
+COMMENT ON COLUMN "member_profile"."statement"         IS 'Freely chosen text of the member for his/her profile';
+COMMENT ON COLUMN "member_profile"."profile"           IS 'Additional profile data as JSON document';
+COMMENT ON COLUMN "member_profile"."profile_text_data" IS 'Text data from "profile" field for full text search';
 
 
 CREATE TABLE "rendered_member_statement" (
@@ -328,8 +326,11 @@ COMMENT ON COLUMN "ignored_member"."other_member_id" IS 'Member being ignored';
 
 
 CREATE TABLE "session" (
-        "ident"                 TEXT            PRIMARY KEY,
+        UNIQUE ("member_id", "id"),  -- index needed for foreign-key on table "token"
+        "id"                    SERIAL8         PRIMARY KEY,
+        "ident"                 TEXT            NOT NULL UNIQUE,
         "additional_secret"     TEXT,
+        "logout_token"          TEXT,
         "expiry"                TIMESTAMPTZ     NOT NULL DEFAULT now() + '24 hours',
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE SET NULL,
         "authority"             TEXT,
@@ -343,12 +344,143 @@ COMMENT ON TABLE "session" IS 'Sessions, i.e. for a web-frontend or API layer';
 
 COMMENT ON COLUMN "session"."ident"             IS 'Secret session identifier (i.e. random string)';
 COMMENT ON COLUMN "session"."additional_secret" IS 'Additional field to store a secret, which can be used against CSRF attacks';
+COMMENT ON COLUMN "session"."logout_token"      IS 'Optional token to authorize logout through external component';
 COMMENT ON COLUMN "session"."member_id"         IS 'Reference to member, who is logged in';
 COMMENT ON COLUMN "session"."authority"         IS 'Temporary store for "member"."authority" during member account creation';
 COMMENT ON COLUMN "session"."authority_uid"     IS 'Temporary store for "member"."authority_uid" during member account creation';
 COMMENT ON COLUMN "session"."authority_login"   IS 'Temporary store for "member"."authority_login" during member account creation';
 COMMENT ON COLUMN "session"."needs_delegation_check" IS 'Set to TRUE, if member must perform a delegation check to proceed with login; see column "last_delegation_check" in "member" table';
 COMMENT ON COLUMN "session"."lang"              IS 'Language code of the selected language';
+
+
+CREATE TYPE "authflow" AS ENUM ('code', 'token');
+
+COMMENT ON TYPE "authflow" IS 'OAuth 2.0 flows: ''code'' = Authorization Code flow, ''token'' = Implicit flow';
+
+
+CREATE TABLE "system_application" (
+        "id"                    SERIAL4         PRIMARY KEY,
+        "name"                  TEXT            NOT NULL,
+        "client_id"             TEXT            NOT NULL UNIQUE,
+        "default_redirect_uri"  TEXT            NOT NULL,
+        "cert_common_name"      TEXT,
+        "client_cred_scope"     TEXT,
+        "flow"                  "authflow",
+        "automatic_scope"       TEXT,
+        "permitted_scope"       TEXT,
+        "forbidden_scope"       TEXT );
+
+COMMENT ON TABLE "system_application" IS 'OAuth 2.0 clients that are registered by the system administrator';
+
+COMMENT ON COLUMN "system_application"."name"              IS 'Human readable name of application';
+COMMENT ON COLUMN "system_application"."client_id"         IS 'OAuth 2.0 "client_id"';
+COMMENT ON COLUMN "system_application"."cert_common_name"  IS 'Value for CN field of TLS client certificate';
+COMMENT ON COLUMN "system_application"."client_cred_scope" IS 'Space-separated list of scopes; If set, Client Credentials Grant is allowed; value determines scope';
+COMMENT ON COLUMN "system_application"."flow"              IS 'If set to ''code'' or ''token'', then Authorization Code or Implicit flow is allowed respectively';
+COMMENT ON COLUMN "system_application"."automatic_scope"   IS 'Space-separated list of scopes; Automatically granted scope for Authorization Code or Implicit flow';
+COMMENT ON COLUMN "system_application"."permitted_scope"   IS 'Space-separated list of scopes; If set, scope that members may grant to the application is limited to the given value';
+COMMENT ON COLUMN "system_application"."forbidden_scope"   IS 'Space-separated list of scopes that may not be granted to the application by a member';
+
+
+CREATE TABLE "system_application_redirect_uri" (
+        PRIMARY KEY ("system_application_id", "redirect_uri"),
+        "system_application_id" INT4            REFERENCES "system_application" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "redirect_uri"          TEXT );
+
+COMMENT ON TABLE "system_application_redirect_uri" IS 'Additional OAuth 2.0 redirection endpoints, which may be selected through the "redirect_uri" GET parameter';
+
+
+CREATE TABLE "dynamic_application_scope" (
+        PRIMARY KEY ("redirect_uri", "flow", "scope"),
+        "redirect_uri"          TEXT,
+        "flow"                  TEXT,
+        "scope"                 TEXT,
+        "expiry"                TIMESTAMPTZ     NOT NULL DEFAULT now() + '24 hours' );
+CREATE INDEX "dynamic_application_scope_redirect_uri_scope_idx" ON "dynamic_application_scope" ("redirect_uri", "flow", "scope");
+CREATE INDEX "dynamic_application_scope_expiry_idx" ON "dynamic_application_scope" ("expiry");
+
+COMMENT ON TABLE "dynamic_application_scope" IS 'Dynamic OAuth 2.0 client registration data';
+
+COMMENT ON COLUMN "dynamic_application_scope"."redirect_uri" IS 'Redirection endpoint for which the registration has been done';
+COMMENT ON COLUMN "dynamic_application_scope"."flow"         IS 'OAuth 2.0 flow for which the registration has been done (see also "system_application"."flow")';
+COMMENT ON COLUMN "dynamic_application_scope"."scope"        IS 'Single scope without space characters (use multiple rows for more scopes)';
+COMMENT ON COLUMN "dynamic_application_scope"."expiry"       IS 'Expiry unless renewed';
+
+
+CREATE TABLE "member_application" (
+        "id"                    SERIAL4         PRIMARY KEY,
+        UNIQUE ("system_application_id", "member_id"),
+        UNIQUE ("domain", "member_id"),
+        "member_id"             INT4            NOT NULL REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "system_application_id" INT4            REFERENCES "system_application" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "domain"                TEXT,
+        "session_id"            INT8,
+        FOREIGN KEY ("member_id", "session_id") REFERENCES "session" ("member_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "scope"                 TEXT            NOT NULL,
+        CONSTRAINT "system_application_or_domain_but_not_both" CHECK (
+          ("system_application_id" NOTNULL AND "domain" ISNULL) OR
+          ("system_application_id" ISNULL AND "domain" NOTNULL) ) );
+CREATE INDEX "member_application_member_id_idx" ON "member_application" ("member_id");
+
+COMMENT ON TABLE "member_application" IS 'Application authorized by a member';
+
+COMMENT ON COLUMN "member_application"."system_application_id" IS 'If set, then application is a system application';
+COMMENT ON COLUMN "member_application"."domain"                IS 'If set, then application is a dynamically registered OAuth 2.0 client; value is set to client''s domain';
+COMMENT ON COLUMN "member_application"."session_id"            IS 'If set, registration ends with session';
+COMMENT ON COLUMN "member_application"."scope"                 IS 'Granted scope as space-separated list of strings';
+
+
+CREATE TYPE "token_type" AS ENUM ('authorization', 'refresh', 'access');
+
+COMMENT ON TYPE "token_type" IS 'Types for entries in "token" table';
+
+
+CREATE TABLE "token" (
+        "id"                    SERIAL8         PRIMARY KEY,
+        "token"                 TEXT            NOT NULL UNIQUE,
+        "token_type"            "token_type"    NOT NULL,
+        "authorization_token_id" INT8           REFERENCES "token" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "member_id"             INT4            NOT NULL REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "system_application_id" INT4            REFERENCES "system_application" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "domain"                TEXT,
+        FOREIGN KEY ("member_id", "domain") REFERENCES "member_application" ("member_id", "domain") ON DELETE CASCADE ON UPDATE CASCADE,
+        "session_id"            INT8,
+        FOREIGN KEY ("member_id", "session_id") REFERENCES "session" ("member_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE,  -- NOTE: deletion through "detach_token_from_session" trigger on table "session"
+        "redirect_uri"          TEXT,
+        "redirect_uri_explicit" BOOLEAN,
+        "created"               TIMESTAMPTZ     NOT NULL DEFAULT now(),
+        "expiry"                TIMESTAMPTZ     DEFAULT now() + '1 hour',
+        "used"                  BOOLEAN         NOT NULL DEFAULT FALSE,
+        "scope"                 TEXT            NOT NULL,
+        CONSTRAINT "access_token_needs_expiry"
+          CHECK ("token_type" != 'access'::"token_type" OR "expiry" NOTNULL),
+        CONSTRAINT "authorization_token_needs_redirect_uri"
+          CHECK ("token_type" != 'authorization'::"token_type" OR ("redirect_uri" NOTNULL AND "redirect_uri_explicit" NOTNULL) ) );
+CREATE INDEX "token_member_id_idx" ON "token" ("member_id");
+CREATE INDEX "token_authorization_token_id_idx" ON "token" ("authorization_token_id");
+CREATE INDEX "token_expiry_idx" ON "token" ("expiry");
+
+COMMENT ON TABLE "token" IS 'Issued OAuth 2.0 authorization codes and access/refresh tokens';
+
+COMMENT ON COLUMN "token"."token"                  IS 'String secret (the actual token)';
+COMMENT ON COLUMN "token"."authorization_token_id" IS 'Reference to authorization token if tokens were originally created by Authorization Code flow (allows deletion if code is used twice)';
+COMMENT ON COLUMN "token"."system_application_id"  IS 'If set, then application is a system application';
+COMMENT ON COLUMN "token"."domain"                 IS 'If set, then application is a dynamically registered OAuth 2.0 client; value is set to client''s domain';
+COMMENT ON COLUMN "token"."session_id"             IS 'If set, then token is tied to a session; Deletion of session sets value to NULL (via trigger) and removes all scopes without suffix ''_detached''';
+COMMENT ON COLUMN "token"."redirect_uri"           IS 'Authorization codes must be bound to a specific redirect URI';
+COMMENT ON COLUMN "token"."redirect_uri_explicit"  IS 'True if ''redirect_uri'' parameter was explicitly specified during authorization request of the Authorization Code flow (since RFC 6749 requires it to be included in the access token request in this case)';
+COMMENT ON COLUMN "token"."expiry"                 IS 'Point in time when code or token expired; In case of "used" authorization codes, authorization code must not be deleted as long as tokens exist which refer to the authorization code';
+COMMENT ON COLUMN "token"."used"                   IS 'Can be set to TRUE for authorization codes that have been used (enables deletion of authorization codes that were used twice)';
+COMMENT ON COLUMN "token"."scope"                  IS 'Scope as space-separated list of strings (detached scopes are marked with ''_detached'' suffix)';
+
+
+CREATE TABLE "token_scope" (
+        PRIMARY KEY ("token_id", "index"),
+        "token_id"              INT8            REFERENCES "token" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "index"                 INT4,
+        "scope"                 TEXT            NOT NULL );
+
+COMMENT ON TABLE "token_scope" IS 'Additional scopes for an authorization code if ''scope1'', ''scope2'', etc. parameters were used during Authorization Code flow to request several access and refresh tokens at once';
 
 
 CREATE TYPE "defeat_strength" AS ENUM ('simple', 'tuple');
@@ -373,7 +505,10 @@ CREATE TABLE "policy" (
         "discussion_time"       INTERVAL,
         "verification_time"     INTERVAL,
         "voting_time"           INTERVAL,
-        "issue_quorum"          INT4            NOT NULL,
+        "issue_quorum"          INT4            CHECK ("issue_quorum" >= 1),
+        "issue_quorum_num"      INT4,
+        "issue_quorum_den"      INT4,
+        "initiative_quorum"     INT4            NOT NULL CHECK ("initiative_quorum" >= 1),
         "initiative_quorum_num" INT4            NOT NULL,
         "initiative_quorum_den" INT4            NOT NULL,
         "defeat_strength"     "defeat_strength" NOT NULL DEFAULT 'tuple',
@@ -391,7 +526,9 @@ CREATE TABLE "policy" (
         "no_reverse_beat_path"          BOOLEAN NOT NULL DEFAULT FALSE,
         "no_multistage_majority"        BOOLEAN NOT NULL DEFAULT FALSE,
         CONSTRAINT "issue_quorum_if_and_only_if_not_polling" CHECK (
-          "polling" = ("issue_quorum" ISNULL) ),
+          "polling" = ("issue_quorum"     ISNULL) AND
+          "polling" = ("issue_quorum_num" ISNULL) AND
+          "polling" = ("issue_quorum_den" ISNULL) ),
         CONSTRAINT "min_admission_time_smaller_than_max_admission_time" CHECK (
           "min_admission_time" < "max_admission_time" ),
         CONSTRAINT "timing_null_or_not_null_constraints" CHECK (
@@ -425,7 +562,10 @@ COMMENT ON COLUMN "policy"."max_admission_time"    IS 'Maximum duration of issue
 COMMENT ON COLUMN "policy"."discussion_time"       IS 'Duration of issue state ''discussion''; Regular time until an issue is "half_frozen" after being "accepted"';
 COMMENT ON COLUMN "policy"."verification_time"     IS 'Duration of issue state ''verification''; Regular time until an issue is "fully_frozen" (e.g. entering issue state ''voting'') after being "half_frozen"';
 COMMENT ON COLUMN "policy"."voting_time"           IS 'Duration of issue state ''voting''; Time after an issue is "fully_frozen" but not "closed" (duration of issue state ''voting'')';
-COMMENT ON COLUMN "policy"."issue_quorum"          IS 'Minimum number of supporters needed for one initiative of an issue to allow the issue to pass from ''admission'' to ''discussion'' state (Note: further requirements apply, see tables "admission_rule" and "admission_rule_condition")';
+COMMENT ON COLUMN "policy"."issue_quorum"          IS 'Absolute number of supporters needed by an initiative to be "accepted", i.e. pass from ''admission'' to ''discussion'' state';
+COMMENT ON COLUMN "policy"."issue_quorum_num"      IS 'Numerator of supporter quorum to be reached by an initiative to be "accepted", i.e. pass from ''admission'' to ''discussion'' state (Note: further requirements apply, see quorum columns of "area" table)';
+COMMENT ON COLUMN "policy"."issue_quorum_den"      IS 'Denominator of supporter quorum to be reached by an initiative to be "accepted", i.e. pass from ''admission'' to ''discussion'' state (Note: further requirements apply, see quorum columns of "area" table)';
+COMMENT ON COLUMN "policy"."initiative_quorum"     IS 'Absolute number of satisfied supporters to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "policy"."initiative_quorum_num" IS 'Numerator of satisfied supporter quorum to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "policy"."initiative_quorum_den" IS 'Denominator of satisfied supporter quorum to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "policy"."defeat_strength"       IS 'How pairwise defeats are measured for the Schulze method; see type "defeat_strength"; ''tuple'' is the recommended setting';
@@ -452,12 +592,12 @@ CREATE TABLE "unit" (
         "description"           TEXT            NOT NULL DEFAULT '',
         "external_reference"    TEXT,
         "member_count"          INT4,
-        "region"                ECLUSTER,
+        "region"                JSONB,
         "text_search_data"      TSVECTOR );
 CREATE INDEX "unit_root_idx" ON "unit" ("id") WHERE "parent_id" ISNULL;
 CREATE INDEX "unit_parent_id_idx" ON "unit" ("parent_id");
 CREATE INDEX "unit_active_idx" ON "unit" ("active");
-CREATE INDEX "unit_region_idx" ON "unit" USING gist ("region");
+CREATE INDEX "unit_region_idx" ON "unit" USING gist ((GeoJSON_to_ecluster("region")));
 CREATE INDEX "unit_text_search_data_idx" ON "unit" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "unit"
@@ -494,18 +634,24 @@ COMMENT ON TABLE "unit_setting" IS 'Place for frontend to store unit specific se
 
 
 CREATE TABLE "area" (
-        UNIQUE ("unit_id", "id"),  -- index needed for foreign-key on table "admission_rule_condition"
-        "unit_id"               INT4            NOT NULL REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        UNIQUE ("unit_id", "id"),  -- index needed for foreign-key on table "event"
         "id"                    SERIAL4         PRIMARY KEY,
+        "unit_id"               INT4            NOT NULL REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "active"                BOOLEAN         NOT NULL DEFAULT TRUE,
         "name"                  TEXT            NOT NULL,
         "description"           TEXT            NOT NULL DEFAULT '',
+        "quorum_standard"       NUMERIC         NOT NULL DEFAULT 2 CHECK ("quorum_standard" >= 0),
+        "quorum_issues"         NUMERIC         NOT NULL DEFAULT 1 CHECK ("quorum_issues" > 0),
+        "quorum_time"           INTERVAL        NOT NULL DEFAULT '1 day' CHECK ("quorum_time" > '0'::INTERVAL),
+        "quorum_exponent"       NUMERIC         NOT NULL DEFAULT 0.5 CHECK ("quorum_exponent" BETWEEN 0 AND 1),
+        "quorum_factor"         NUMERIC         NOT NULL DEFAULT 2 CHECK ("quorum_factor" >= 1),
+        "quorum_den"            INT4            CHECK ("quorum_den" > 0),
+        "issue_quorum"          INT4,
         "external_reference"    TEXT,
-        "region"                ECLUSTER,
+        "region"                JSONB,
         "text_search_data"      TSVECTOR );
-CREATE INDEX "area_unit_id_idx" ON "area" ("unit_id");
 CREATE INDEX "area_active_idx" ON "area" ("active");
-CREATE INDEX "area_region_idx" ON "area" USING gist ("region");
+CREATE INDEX "area_region_idx" ON "area" USING gist ((GeoJSON_to_ecluster("region")));
 CREATE INDEX "area_text_search_data_idx" ON "area" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "area"
@@ -516,6 +662,13 @@ CREATE TRIGGER "update_text_search_data"
 COMMENT ON TABLE "area" IS 'Subject areas';
 
 COMMENT ON COLUMN "area"."active"             IS 'TRUE means new issues can be created in this area';
+COMMENT ON COLUMN "area"."quorum_standard"    IS 'Parameter for dynamic issue quorum: default quorum';
+COMMENT ON COLUMN "area"."quorum_issues"      IS 'Parameter for dynamic issue quorum: number of open issues for default quorum';
+COMMENT ON COLUMN "area"."quorum_time"        IS 'Parameter for dynamic issue quorum: discussion, verification, and voting time of open issues to result in the given default quorum (open issues with shorter time will increase quorum and open issues with longer time will reduce quorum if "quorum_exponent" is greater than zero)';
+COMMENT ON COLUMN "area"."quorum_exponent"    IS 'Parameter for dynamic issue quorum: set to zero to ignore duration of open issues, set to one to fully take duration of open issues into account; defaults to 0.5';
+COMMENT ON COLUMN "area"."quorum_factor"      IS 'Parameter for dynamic issue quorum: factor to increase dynamic quorum when a number of "quorum_issues" issues with "quorum_time" duration of discussion, verification, and voting phase are added to the number of open admitted issues';
+COMMENT ON COLUMN "area"."quorum_den"         IS 'Parameter for dynamic issue quorum: when set, dynamic quorum is multiplied with "issue"."population" and divided by "quorum_den" (and then rounded up)';
+COMMENT ON COLUMN "area"."issue_quorum"       IS 'Additional dynamic issue quorum based on the number of open accepted issues; automatically calculated by function "issue_admission"';
 COMMENT ON COLUMN "area"."external_reference" IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "area"."region"             IS 'Scattered (or hollow) polygon represented as an array of polygons indicating valid coordinates for initiatives of issues with this policy';
 
@@ -551,43 +704,23 @@ COMMENT ON TABLE "allowed_policy" IS 'Selects which policies can be used in each
 COMMENT ON COLUMN "allowed_policy"."default_policy" IS 'One policy per area can be set as default.';
 
 
-CREATE TABLE "admission_rule" (
-        UNIQUE ("unit_id", "id"),  -- index needed for foreign-key on table "admission_rule_condition"
-        "unit_id"               INT4            NOT NULL REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "id"                    SERIAL4         PRIMARY KEY,
-        "name"                  TEXT            NOT NULL,
-        "description"           TEXT            NOT NULL DEFAULT '' );
-
-COMMENT ON TABLE "admission_rule" IS 'Groups entries in "admission_rule_condition" to regulate how many issues may pass from ''admission'' to ''discussion'' state in a given time';
-
-
-CREATE TABLE "admission_rule_condition" (
-        "unit_id"               INT4            NOT NULL,
-        "admission_rule_id"     INT4,
-        FOREIGN KEY ("unit_id", "admission_rule_id") REFERENCES "admission_rule" ("unit_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "policy_id"             INT4            REFERENCES "policy" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "area_id"               INT4,
-        FOREIGN KEY ("unit_id", "area_id") REFERENCES "area" ("unit_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "holdoff_time"          INTERVAL        NOT NULL );
-CREATE UNIQUE INDEX "admission_rule_condition_unit_idx" ON "admission_rule_condition" ("admission_rule_id") WHERE "policy_id" ISNULL AND "area_id" ISNULL;
-CREATE UNIQUE INDEX "admission_rule_condition_policy_idx" ON "admission_rule_condition" ("admission_rule_id", "policy_id") WHERE "area_id" ISNULL;
-CREATE UNIQUE INDEX "admission_rule_condition_area_idx" ON "admission_rule_condition" ("admission_rule_id", "area_id") WHERE "policy_id" ISNULL;
-CREATE UNIQUE INDEX "admission_rule_condition_policy_area_idx" ON "admission_rule_condition" ("admission_rule_id", "policy_id", "area_id");
-
-COMMENT ON TABLE "admission_rule_condition" IS 'Regulates how many issues may pass from ''admission'' to ''discussion'' state in a given time; See definition of "issue_for_admission" view for details';
-
-COMMENT ON COLUMN "admission_rule_condition"."unit_id"           IS 'Grouped "admission_rule_condition" rows must have the same "unit_id"';
-COMMENT ON COLUMN "admission_rule_condition"."admission_rule_id" IS 'Grouping several "admission_rule_condition" rows';
-COMMENT ON COLUMN "admission_rule_condition"."policy_id"         IS 'Set to link the condition with a given policy, NULL for any policy in the issue';
-COMMENT ON COLUMN "admission_rule_condition"."area_id"           IS 'Set to link the condition with a given policy, NULL for any area in the issue';
-COMMENT ON COLUMN "admission_rule_condition"."holdoff_time"      IS 'After an issue in the given unit, policy, and/or area has been admitted, the "admission_rule" is disabled for the selected "holdoff_time", e.g. a "holdoff_time" of ''6 hours'' causes four issues per day to be admitted';
-
-
 CREATE TABLE "snapshot" (
+        UNIQUE ("issue_id", "id"),  -- index needed for foreign-key on table "issue"
         "id"                    SERIAL8         PRIMARY KEY,
-        "calculated"            TIMESTAMPTZ     NOT NULL DEFAULT now() );
+        "calculated"            TIMESTAMPTZ     NOT NULL DEFAULT now(),
+        "population"            INT4,
+        "area_id"               INT4            NOT NULL REFERENCES "area" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "issue_id"              INT4 );         -- NOTE: following (cyclic) reference is added later through ALTER command: REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE
 
 COMMENT ON TABLE "snapshot" IS 'Point in time when a snapshot of one or more issues (see table "snapshot_issue") and their supporter situation is taken';
+
+
+CREATE TABLE "snapshot_population" (
+        PRIMARY KEY ("snapshot_id", "member_id"),
+        "snapshot_id"           INT8            REFERENCES "snapshot" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE );
+
+COMMENT ON TABLE "snapshot_population" IS 'Members with voting right relevant for a snapshot';
 
 
 CREATE TYPE "issue_state" AS ENUM (
@@ -604,6 +737,7 @@ COMMENT ON TYPE "issue_state" IS 'State of issues';
 
 
 CREATE TABLE "issue" (
+        UNIQUE ("area_id", "id"),  -- index needed for foreign-key on table "event"
         "id"                    SERIAL4         PRIMARY KEY,
         "area_id"               INT4            NOT NULL REFERENCES "area" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "policy_id"             INT4            NOT NULL REFERENCES "policy" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -622,10 +756,15 @@ CREATE TABLE "issue" (
         "discussion_time"       INTERVAL        NOT NULL,
         "verification_time"     INTERVAL        NOT NULL,
         "voting_time"           INTERVAL        NOT NULL,
+        "calculated"            TIMESTAMPTZ,  -- NOTE: copy of "calculated" column of latest snapshot, but no referential integrity to avoid overhead
         "latest_snapshot_id"    INT8            REFERENCES "snapshot" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "admission_snapshot_id" INT8            REFERENCES "snapshot" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
-        "half_freeze_snapshot_id" INT8          REFERENCES "snapshot" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
-        "full_freeze_snapshot_id" INT8          REFERENCES "snapshot" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "half_freeze_snapshot_id" INT8,
+        FOREIGN KEY ("id", "half_freeze_snapshot_id")
+          REFERENCES "snapshot" ("issue_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "full_freeze_snapshot_id" INT8,
+        FOREIGN KEY ("id", "full_freeze_snapshot_id")
+          REFERENCES "snapshot" ("issue_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "population"            INT4,
         "voter_count"           INT4,
         "status_quo_schulze_rank" INT4,
@@ -665,7 +804,6 @@ CREATE TABLE "issue" (
           --("accepted" ISNULL OR "admission_snapshot_id" NOTNULL) AND
           ("half_frozen" ISNULL OR "half_freeze_snapshot_id" NOTNULL) AND
           ("fully_frozen" ISNULL OR "full_freeze_snapshot_id" NOTNULL) ) );
-CREATE INDEX "issue_area_id_idx" ON "issue" ("area_id");
 CREATE INDEX "issue_policy_id_idx" ON "issue" ("policy_id");
 CREATE INDEX "issue_state_idx" ON "issue" ("state");
 CREATE INDEX "issue_created_idx" ON "issue" ("created");
@@ -685,7 +823,7 @@ COMMENT ON TABLE "issue" IS 'Groups of initiatives';
 COMMENT ON COLUMN "issue"."admin_notice"            IS 'Public notice by admin to explain manual interventions, or to announce corrections';
 COMMENT ON COLUMN "issue"."external_reference"      IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "issue"."phase_finished"          IS 'Set to a value NOTNULL, if the current phase has finished, but calculations are pending; No changes in this issue shall be made by the frontend or API when this value is set';
-COMMENT ON COLUMN "issue"."accepted"                IS 'Point in time, when the issue was accepted for further discussion (see table "admission_rule" and column "issue_quorum" of table "policy")';
+COMMENT ON COLUMN "issue"."accepted"                IS 'Point in time, when the issue was accepted for further discussion (see columns "issue_quorum_num" and "issue_quorum_den" of table "policy" and quorum columns of table "area")';
 COMMENT ON COLUMN "issue"."half_frozen"             IS 'Point in time, when "discussion_time" has elapsed; Frontends must ensure that for half_frozen issues a) initiatives are not revoked, b) no new drafts are created, c) no initiators are added or removed.';
 COMMENT ON COLUMN "issue"."fully_frozen"            IS 'Point in time, when "verification_time" has elapsed and voting has started; Frontends must ensure that for fully_frozen issues additionally to the restrictions for half_frozen issues a) initiatives are not created, b) no interest is created or removed, c) no supporters are added or removed, d) no opinions are created, changed or deleted.';
 COMMENT ON COLUMN "issue"."closed"                  IS 'Point in time, when "max_admission_time" or "voting_time" have elapsed, and issue is no longer active; Frontends must ensure that for closed issues additionally to the restrictions for half_frozen and fully_frozen issues a) no voter is added or removed to/from the direct_voter table, b) no votes are added, modified or removed.';
@@ -695,17 +833,21 @@ COMMENT ON COLUMN "issue"."max_admission_time"      IS 'Copied from "policy" tab
 COMMENT ON COLUMN "issue"."discussion_time"         IS 'Copied from "policy" table at creation of issue';
 COMMENT ON COLUMN "issue"."verification_time"       IS 'Copied from "policy" table at creation of issue';
 COMMENT ON COLUMN "issue"."voting_time"             IS 'Copied from "policy" table at creation of issue';
+COMMENT ON COLUMN "issue"."calculated"              IS 'Point in time, when most recent snapshot and "population" and *_count values were calculated (NOTE: value is equal to "snapshot"."calculated" of snapshot with "id"="issue"."latest_snapshot_id")';
 COMMENT ON COLUMN "issue"."latest_snapshot_id"      IS 'Snapshot id of most recent snapshot';
 COMMENT ON COLUMN "issue"."admission_snapshot_id"   IS 'Snapshot id when issue as accepted or canceled in admission phase';
 COMMENT ON COLUMN "issue"."half_freeze_snapshot_id" IS 'Snapshot id at end of discussion phase';
 COMMENT ON COLUMN "issue"."full_freeze_snapshot_id" IS 'Snapshot id at end of verification phase';
-COMMENT ON COLUMN "issue"."population"              IS 'Sum of "weight" column in table "direct_population_snapshot"';
+COMMENT ON COLUMN "issue"."population"              IS 'Count of members in "snapshot_population" table with "snapshot_id" equal to "issue"."latest_snapshot_id"';
 COMMENT ON COLUMN "issue"."voter_count"             IS 'Total number of direct and delegating voters; This value is related to the final voting, while "population" is related to snapshots before the final voting';
 COMMENT ON COLUMN "issue"."status_quo_schulze_rank" IS 'Schulze rank of status quo, as calculated by "calculate_ranks" function';
 
 
+ALTER TABLE "snapshot" ADD FOREIGN KEY ("issue_id") REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+
 CREATE TABLE "issue_order_in_admission_state" (
-        "id"                    INT8            PRIMARY KEY, --REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "id"                    INT8            PRIMARY KEY, -- NOTE: no referential integrity due to performans/locking issues; REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "order_in_area"         INT4,
         "order_in_unit"         INT4 );
 
@@ -735,9 +877,8 @@ CREATE TABLE "initiative" (
         "created"               TIMESTAMPTZ     NOT NULL DEFAULT now(),
         "revoked"               TIMESTAMPTZ,
         "revoked_by_member_id"  INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
-        "suggested_initiative_id" INT4          REFERENCES "initiative" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "location1"             EPOINT,
-        "location2"             EPOINT,
+        "suggested_initiative_id" INT4          REFERENCES "initiative" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+        "location"              JSONB,
         "external_reference"    TEXT,
         "admitted"              BOOLEAN,
         "supporter_count"                    INT4,
@@ -765,8 +906,6 @@ CREATE TABLE "initiative" (
           CHECK (("revoked" NOTNULL) = ("revoked_by_member_id" NOTNULL)),
         CONSTRAINT "non_revoked_initiatives_cant_suggest_other"
           CHECK ("revoked" NOTNULL OR "suggested_initiative_id" ISNULL),
-        CONSTRAINT "location2_requires_location1"
-          CHECK ("location2" ISNULL OR "location1" NOTNULL),
         CONSTRAINT "revoked_initiatives_cant_be_admitted"
           CHECK ("revoked" ISNULL OR "admitted" ISNULL),
         CONSTRAINT "non_admitted_initiatives_cant_contain_voting_results" CHECK (
@@ -788,8 +927,7 @@ CREATE TABLE "initiative" (
         CONSTRAINT "unique_rank_per_issue" UNIQUE ("issue_id", "rank") );
 CREATE INDEX "initiative_created_idx" ON "initiative" ("created");
 CREATE INDEX "initiative_revoked_idx" ON "initiative" ("revoked");
-CREATE INDEX "initiative_location1_idx" ON "initiative" USING gist ("location1");
-CREATE INDEX "initiative_location2_idx" ON "initiative" USING gist ("location2");
+CREATE INDEX "initiative_location_idx" ON "initiative" USING gist ((GeoJSON_to_ecluster("location")));
 CREATE INDEX "initiative_text_search_data_idx" ON "initiative" USING gin ("text_search_data");
 CREATE INDEX "initiative_draft_text_search_data_idx" ON "initiative" USING gin ("draft_text_search_data");
 CREATE TRIGGER "update_text_search_data"
@@ -802,8 +940,7 @@ COMMENT ON TABLE "initiative" IS 'Group of members publishing drafts for resolut
 COMMENT ON COLUMN "initiative"."polling"                IS 'Initiative does not need to pass the initiative quorum (see "policy"."polling")';
 COMMENT ON COLUMN "initiative"."revoked"                IS 'Point in time, when one initiator decided to revoke the initiative';
 COMMENT ON COLUMN "initiative"."revoked_by_member_id"   IS 'Member, who decided to revoke the initiative';
-COMMENT ON COLUMN "initiative"."location1"              IS 'Geographic location of initiative (automatically copied from most recent draft)';
-COMMENT ON COLUMN "initiative"."location2"              IS 'Geographic location of initiative''s second marker (automatically copied from most recent draft)';
+COMMENT ON COLUMN "initiative"."location"               IS 'Geographic location of initiative as GeoJSON object (automatically copied from most recent draft)';
 COMMENT ON COLUMN "initiative"."external_reference"     IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "initiative"."admitted"               IS 'TRUE, if initiative reaches the "initiative_quorum" when freezing the issue';
 COMMENT ON COLUMN "initiative"."supporter_count"                    IS 'Calculated from table "direct_supporter_snapshot"';
@@ -872,16 +1009,12 @@ CREATE TABLE "draft" (
         "author_id"             INT4            NOT NULL REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "formatting_engine"     TEXT,
         "content"               TEXT            NOT NULL,
-        "location1"             EPOINT,
-        "location2"             EPOINT,
+        "location"              JSONB,
         "external_reference"    TEXT,
-        "text_search_data"      TSVECTOR,
-        CONSTRAINT "location2_requires_location1"
-          CHECK ("location2" ISNULL OR "location1" NOTNULL) );
+        "text_search_data"      TSVECTOR );
 CREATE INDEX "draft_created_idx" ON "draft" ("created");
 CREATE INDEX "draft_author_id_created_idx" ON "draft" ("author_id", "created");
-CREATE INDEX "draft_location1_idx" ON "draft" USING gist ("location1");
-CREATE INDEX "draft_location2_idx" ON "draft" USING gist ("location2");
+CREATE INDEX "draft_location_idx" ON "draft" USING gist ((GeoJSON_to_ecluster("location")));
 CREATE INDEX "draft_text_search_data_idx" ON "draft" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "draft"
@@ -892,8 +1025,7 @@ COMMENT ON TABLE "draft" IS 'Drafts of initiatives to solve issues; Frontends mu
 
 COMMENT ON COLUMN "draft"."formatting_engine"  IS 'Allows different formatting engines (i.e. wiki formats) to be used';
 COMMENT ON COLUMN "draft"."content"            IS 'Text of the draft in a format depending on the field "formatting_engine"';
-COMMENT ON COLUMN "draft"."location1"          IS 'Geographic location of initiative (automatically copied to "initiative" table if draft is most recent)';
-COMMENT ON COLUMN "draft"."location2"          IS 'Geographic location of initiative''s second marker (automatically copied to "initiative" table if draft is most recent)';
+COMMENT ON COLUMN "draft"."location"           IS 'Geographic location of initiative as GeoJSON object (automatically copied to "initiative" table if draft is most recent)';
 COMMENT ON COLUMN "draft"."external_reference" IS 'Opaque data field to store an external reference';
 
 
@@ -917,8 +1049,7 @@ CREATE TABLE "suggestion" (
         "name"                  TEXT            NOT NULL,
         "formatting_engine"     TEXT,
         "content"               TEXT            NOT NULL DEFAULT '',
-        "location1"             EPOINT,
-        "location2"             EPOINT,
+        "location"              JSONB,
         "external_reference"    TEXT,
         "text_search_data"      TSVECTOR,
         "minus2_unfulfilled_count" INT4,
@@ -929,13 +1060,10 @@ CREATE TABLE "suggestion" (
         "plus1_fulfilled_count"    INT4,
         "plus2_unfulfilled_count"  INT4,
         "plus2_fulfilled_count"    INT4,
-        "proportional_order"    INT4,
-        CONSTRAINT "location2_requires_location1"
-          CHECK ("location2" ISNULL OR "location1" NOTNULL) );
+        "proportional_order"    INT4 );
 CREATE INDEX "suggestion_created_idx" ON "suggestion" ("created");
 CREATE INDEX "suggestion_author_id_created_idx" ON "suggestion" ("author_id", "created");
-CREATE INDEX "suggestion_location1_idx" ON "suggestion" USING gist ("location1");
-CREATE INDEX "suggestion_location2_idx" ON "suggestion" USING gist ("location2");
+CREATE INDEX "suggestion_location_idx" ON "suggestion" USING gist ((GeoJSON_to_ecluster("location")));
 CREATE INDEX "suggestion_text_search_data_idx" ON "suggestion" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "suggestion"
@@ -946,8 +1074,7 @@ CREATE TRIGGER "update_text_search_data"
 COMMENT ON TABLE "suggestion" IS 'Suggestions to initiators, to change the current draft; must not be deleted explicitly, as they vanish automatically if the last opinion is deleted';
 
 COMMENT ON COLUMN "suggestion"."draft_id"                 IS 'Draft, which the author has seen when composing the suggestion; should always be set by a frontend, but defaults to current draft of the initiative (implemented by trigger "default_for_draft_id")';
-COMMENT ON COLUMN "suggestion"."location1"                IS 'Geographic location of suggestion';
-COMMENT ON COLUMN "suggestion"."location2"                IS 'Geographic location of suggestion''s second marker';
+COMMENT ON COLUMN "suggestion"."location"                 IS 'Geographic location of suggestion as GeoJSON object';
 COMMENT ON COLUMN "suggestion"."external_reference"       IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "suggestion"."minus2_unfulfilled_count" IS 'Calculated from table "direct_supporter_snapshot", not requiring informed supporters';
 COMMENT ON COLUMN "suggestion"."minus2_fulfilled_count"   IS 'Calculated from table "direct_supporter_snapshot", not requiring informed supporters';
@@ -980,7 +1107,7 @@ COMMENT ON TABLE "suggestion_setting" IS 'Place for frontend to store suggestion
 
 
 CREATE TABLE "temporary_suggestion_counts" (
-        "id"                    INT8            PRIMARY KEY, --REFERENCES "suggestion" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "id"                    INT8            PRIMARY KEY, -- NOTE: no referential integrity due to performance/locking issues; REFERENCES "suggestion" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "minus2_unfulfilled_count" INT4         NOT NULL,
         "minus2_fulfilled_count"   INT4         NOT NULL,
         "minus1_unfulfilled_count" INT4         NOT NULL,
@@ -1021,7 +1148,7 @@ COMMENT ON COLUMN "privilege"."polling_right"    IS 'Right to create issues with
 CREATE TABLE "interest" (
         PRIMARY KEY ("issue_id", "member_id"),
         "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE );
+        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE );
 CREATE INDEX "interest_member_id_idx" ON "interest" ("member_id");
 
 COMMENT ON TABLE "interest" IS 'Interest of members in a particular issue; Frontends must ensure that interest for fully_frozen or closed issues is not added or removed.';
@@ -1030,7 +1157,7 @@ COMMENT ON TABLE "interest" IS 'Interest of members in a particular issue; Front
 CREATE TABLE "initiator" (
         PRIMARY KEY ("initiative_id", "member_id"),
         "initiative_id"         INT4            REFERENCES "initiative" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "accepted"              BOOLEAN );
 CREATE INDEX "initiator_member_id_idx" ON "initiator" ("member_id");
 
@@ -1079,7 +1206,7 @@ COMMENT ON TYPE "delegation_scope" IS 'Scope for delegations: ''unit'', ''area''
 CREATE TABLE "delegation" (
         "id"                    SERIAL8         PRIMARY KEY,
         "truster_id"            INT4            NOT NULL REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "trustee_id"            INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "trustee_id"            INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "scope"              "delegation_scope" NOT NULL,
         "unit_id"               INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "area_id"               INT4            REFERENCES "area" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
@@ -1107,10 +1234,12 @@ COMMENT ON COLUMN "delegation"."issue_id" IS 'Reference to issue, if delegation 
 CREATE TABLE "snapshot_issue" (
         PRIMARY KEY ("snapshot_id", "issue_id"),
         "snapshot_id"           INT8            REFERENCES "snapshot" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE );
+        "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE );  -- NOTE: trigger "delete_snapshot_on_partial_delete" will delete whole "snapshot"
 CREATE INDEX "snapshot_issue_issue_id_idx" ON "snapshot_issue" ("issue_id");
 
 COMMENT ON TABLE "snapshot_issue" IS 'List of issues included in a snapshot';
+
+COMMENT ON COLUMN "snapshot_issue"."issue_id" IS 'Issue being part of the snapshot; Trigger "delete_snapshot_on_partial_delete" on "snapshot_issue" table will delete snapshot if an issue of the snapshot is deleted.';
 
 
 CREATE TABLE "direct_interest_snapshot" (
@@ -1258,7 +1387,21 @@ CREATE TYPE "event_type" AS ENUM (
         'initiative_created_in_existing_issue',
         'initiative_revoked',
         'new_draft_created',
-        'suggestion_created');
+        'suggestion_created',
+        'suggestion_removed',
+        'member_activated',
+        'member_removed',
+        'member_active',
+        'member_name_updated',
+        'member_profile_updated',
+        'member_image_updated',
+        'interest',
+        'initiator',
+        'support',
+        'support_updated',
+        'suggestion_rated',
+        'delegation',
+        'contact' );
 
 COMMENT ON TYPE "event_type" IS 'Type used for column "event" of table "event"';
 
@@ -1268,49 +1411,267 @@ CREATE TABLE "event" (
         "occurrence"            TIMESTAMPTZ     NOT NULL DEFAULT now(),
         "event"                 "event_type"    NOT NULL,
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "other_member_id"       INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "scope"                 "delegation_scope",
+        "unit_id"               INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "area_id"               INT4,
+        FOREIGN KEY ("unit_id", "area_id") REFERENCES "area" ("unit_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
         "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        FOREIGN KEY ("area_id", "issue_id") REFERENCES "issue" ("area_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
         "state"                 "issue_state",
         "initiative_id"         INT4,
         "draft_id"              INT8,
         "suggestion_id"         INT8,
+        "boolean_value"         BOOLEAN,
+        "numeric_value"         INT4,
+        "text_value"            TEXT,
+        "old_text_value"        TEXT,
         FOREIGN KEY ("issue_id", "initiative_id")
           REFERENCES "initiative" ("issue_id", "id")
           ON DELETE CASCADE ON UPDATE CASCADE,
         FOREIGN KEY ("initiative_id", "draft_id")
           REFERENCES "draft" ("initiative_id", "id")
           ON DELETE CASCADE ON UPDATE CASCADE,
-        FOREIGN KEY ("initiative_id", "suggestion_id")
-          REFERENCES "suggestion" ("initiative_id", "id")
-          ON DELETE CASCADE ON UPDATE CASCADE,
-        CONSTRAINT "null_constr_for_issue_state_changed" CHECK (
+        -- NOTE: no referential integrity for suggestions because those are
+        --       actually deleted
+        -- FOREIGN KEY ("initiative_id", "suggestion_id")
+        --   REFERENCES "suggestion" ("initiative_id", "id")
+        --   ON DELETE CASCADE ON UPDATE CASCADE,
+        CONSTRAINT "constr_for_issue_state_changed" CHECK (
           "event" != 'issue_state_changed' OR (
-            "member_id"     ISNULL  AND
-            "issue_id"      NOTNULL AND
-            "state"         NOTNULL AND
-            "initiative_id" ISNULL  AND
-            "draft_id"      ISNULL  AND
-            "suggestion_id" ISNULL  )),
-        CONSTRAINT "null_constr_for_initiative_creation_or_revocation_or_new_draft" CHECK (
+            "member_id"       ISNULL  AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "unit_id"         NOTNULL AND
+            "area_id"         NOTNULL AND
+            "issue_id"        NOTNULL AND
+            "state"           NOTNULL AND
+            "initiative_id"   ISNULL  AND
+            "draft_id"        ISNULL  AND
+            "suggestion_id"   ISNULL  AND
+            "boolean_value"   ISNULL  AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_initiative_creation_or_revocation_or_new_draft" CHECK (
           "event" NOT IN (
             'initiative_created_in_new_issue',
             'initiative_created_in_existing_issue',
             'initiative_revoked',
             'new_draft_created'
           ) OR (
-            "member_id"     NOTNULL AND
-            "issue_id"      NOTNULL AND
-            "state"         NOTNULL AND
-            "initiative_id" NOTNULL AND
-            "draft_id"      NOTNULL AND
-            "suggestion_id" ISNULL  )),
-        CONSTRAINT "null_constr_for_suggestion_creation" CHECK (
+            "member_id"       NOTNULL AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "unit_id"         NOTNULL AND
+            "area_id"         NOTNULL AND
+            "issue_id"        NOTNULL AND
+            "state"           NOTNULL AND
+            "initiative_id"   NOTNULL AND
+            "draft_id"        NOTNULL AND
+            "suggestion_id"   ISNULL  AND
+            "boolean_value"   ISNULL  AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_suggestion_creation" CHECK (
           "event" != 'suggestion_created' OR (
-            "member_id"     NOTNULL AND
-            "issue_id"      NOTNULL AND
-            "state"         NOTNULL AND
-            "initiative_id" NOTNULL AND
-            "draft_id"      ISNULL  AND
-            "suggestion_id" NOTNULL )) );
+            "member_id"       NOTNULL AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "unit_id"         NOTNULL AND
+            "area_id"         NOTNULL AND
+            "issue_id"        NOTNULL AND
+            "state"           NOTNULL AND
+            "initiative_id"   NOTNULL AND
+            "draft_id"        ISNULL  AND
+            "suggestion_id"   NOTNULL AND
+            "boolean_value"   ISNULL  AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_suggestion_removal" CHECK (
+          "event" != 'suggestion_removed' OR (
+            "member_id"       ISNULL AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "unit_id"         NOTNULL AND
+            "area_id"         NOTNULL AND
+            "issue_id"        NOTNULL AND
+            "state"           NOTNULL AND
+            "initiative_id"   NOTNULL AND
+            "draft_id"        ISNULL  AND
+            "suggestion_id"   NOTNULL AND
+            "boolean_value"   ISNULL  AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_value_less_member_event" CHECK (
+          "event" NOT IN (
+            'member_activated',
+            'member_removed',
+            'member_profile_updated',
+            'member_image_updated'
+          ) OR (
+            "member_id"       NOTNULL AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "unit_id"         ISNULL  AND
+            "area_id"         ISNULL  AND
+            "issue_id"        ISNULL  AND
+            "state"           ISNULL  AND
+            "initiative_id"   ISNULL  AND
+            "draft_id"        ISNULL  AND
+            "suggestion_id"   ISNULL  AND
+            "boolean_value"   ISNULL  AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_member_active" CHECK (
+          "event" != 'member_active' OR (
+            "member_id"       NOTNULL AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "unit_id"         ISNULL  AND
+            "area_id"         ISNULL  AND
+            "issue_id"        ISNULL  AND
+            "state"           ISNULL  AND
+            "initiative_id"   ISNULL  AND
+            "draft_id"        ISNULL  AND
+            "suggestion_id"   ISNULL  AND
+            "boolean_value"   NOTNULL AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_member_name_updated" CHECK (
+          "event" != 'member_name_updated' OR (
+            "member_id"       NOTNULL AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "unit_id"         ISNULL  AND
+            "area_id"         ISNULL  AND
+            "issue_id"        ISNULL  AND
+            "state"           ISNULL  AND
+            "initiative_id"   ISNULL  AND
+            "draft_id"        ISNULL  AND
+            "suggestion_id"   ISNULL  AND
+            "boolean_value"   ISNULL  AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      NOTNULL AND
+            "old_text_value"  NOTNULL )),
+        CONSTRAINT "constr_for_interest" CHECK (
+          "event" != 'interest' OR (
+            "member_id"       NOTNULL AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "unit_id"         NOTNULL AND
+            "area_id"         NOTNULL AND
+            "issue_id"        NOTNULL AND
+            "state"           NOTNULL AND
+            "initiative_id"   ISNULL  AND
+            "draft_id"        ISNULL  AND
+            "suggestion_id"   ISNULL  AND
+            "boolean_value"   NOTNULL AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_initiator" CHECK (
+          "event" != 'initiator' OR (
+            "member_id"       NOTNULL AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "unit_id"         NOTNULL AND
+            "area_id"         NOTNULL AND
+            "issue_id"        NOTNULL AND
+            "state"           NOTNULL AND
+            "initiative_id"   NOTNULL AND
+            "draft_id"        ISNULL  AND
+            "suggestion_id"   ISNULL  AND
+            "boolean_value"   NOTNULL AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_support" CHECK (
+          "event" != 'support' OR (
+            "member_id"       NOTNULL AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "unit_id"         NOTNULL AND
+            "area_id"         NOTNULL AND
+            "issue_id"        NOTNULL AND
+            "state"           NOTNULL AND
+            "initiative_id"   NOTNULL AND
+            ("draft_id" NOTNULL) = ("boolean_value" = TRUE) AND
+            "suggestion_id"   ISNULL  AND
+            "boolean_value"   NOTNULL AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_support_updated" CHECK (
+          "event" != 'support_updated' OR (
+            "member_id"       NOTNULL AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "unit_id"         NOTNULL AND
+            "area_id"         NOTNULL AND
+            "issue_id"        NOTNULL AND
+            "state"           NOTNULL AND
+            "initiative_id"   NOTNULL AND
+            "draft_id"        NOTNULL AND
+            "suggestion_id"   ISNULL  AND
+            "boolean_value"   ISNULL  AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_suggestion_rated" CHECK (
+          "event" != 'suggestion_rated' OR (
+            "member_id"       NOTNULL AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "unit_id"         NOTNULL AND
+            "area_id"         NOTNULL AND
+            "issue_id"        NOTNULL AND
+            "state"           NOTNULL AND
+            "initiative_id"   NOTNULL AND
+            "draft_id"        ISNULL  AND
+            "suggestion_id"   NOTNULL AND
+            ("boolean_value" NOTNULL) = ("numeric_value" != 0) AND
+            "numeric_value"   NOTNULL AND
+            "numeric_value" IN (-2, -1, 0, 1, 2) AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_delegation" CHECK (
+          "event" != 'delegation' OR (
+            "member_id"       NOTNULL AND
+            ("other_member_id" NOTNULL) OR ("boolean_value" = FALSE) AND
+            "scope"           NOTNULL AND
+            "unit_id"         NOTNULL AND
+            ("area_id"  NOTNULL) = ("scope" != 'unit'::"delegation_scope") AND
+            ("issue_id" NOTNULL) = ("scope" = 'issue'::"delegation_scope") AND
+            ("state"    NOTNULL) = ("scope" = 'issue'::"delegation_scope") AND
+            "initiative_id"   ISNULL  AND
+            "draft_id"        ISNULL  AND
+            "suggestion_id"   ISNULL  AND
+            "boolean_value"   NOTNULL AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_contact" CHECK (
+          "event" != 'contact' OR (
+            "member_id"       NOTNULL AND
+            "other_member_id" NOTNULL AND
+            "scope"           ISNULL  AND
+            "unit_id"         ISNULL  AND
+            "area_id"         ISNULL  AND
+            "issue_id"        ISNULL  AND
+            "state"           ISNULL  AND
+            "initiative_id"   ISNULL  AND
+            "draft_id"        ISNULL  AND
+            "suggestion_id"   ISNULL  AND
+            "boolean_value"   NOTNULL AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )) );
 CREATE INDEX "event_occurrence_idx" ON "event" ("occurrence");
 
 COMMENT ON TABLE "event" IS 'Event table, automatically filled by triggers';
@@ -1399,10 +1760,19 @@ COMMENT ON TRIGGER "write_member_history" ON "member" IS 'When changing certain 
 CREATE FUNCTION "write_event_issue_state_changed_trigger"()
   RETURNS TRIGGER
   LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "area_row" "area"%ROWTYPE;
     BEGIN
       IF NEW."state" != OLD."state" THEN
-        INSERT INTO "event" ("event", "issue_id", "state")
-          VALUES ('issue_state_changed', NEW."id", NEW."state");
+        SELECT * INTO "area_row" FROM "area" WHERE "id" = NEW."area_id"
+          FOR SHARE;
+        INSERT INTO "event" (
+            "event",
+            "unit_id", "area_id", "issue_id", "state"
+          ) VALUES (
+            'issue_state_changed',
+            "area_row"."unit_id", NEW."area_id", NEW."id", NEW."state"
+          );
       END IF;
       RETURN NULL;
     END;
@@ -1422,16 +1792,19 @@ CREATE FUNCTION "write_event_initiative_or_draft_created_trigger"()
     DECLARE
       "initiative_row" "initiative"%ROWTYPE;
       "issue_row"      "issue"%ROWTYPE;
+      "area_row"       "area"%ROWTYPE;
       "event_v"        "event_type";
     BEGIN
       SELECT * INTO "initiative_row" FROM "initiative"
-        WHERE "id" = NEW."initiative_id";
+        WHERE "id" = NEW."initiative_id" FOR SHARE;
       SELECT * INTO "issue_row" FROM "issue"
-        WHERE "id" = "initiative_row"."issue_id";
+        WHERE "id" = "initiative_row"."issue_id" FOR SHARE;
+      SELECT * INTO "area_row" FROM "area"
+        WHERE "id" = "issue_row"."area_id" FOR SHARE;
       IF EXISTS (
         SELECT NULL FROM "draft"
-        WHERE "initiative_id" = NEW."initiative_id"
-        AND "id" != NEW."id"
+        WHERE "initiative_id" = NEW."initiative_id" AND "id" != NEW."id"
+        FOR SHARE
       ) THEN
         "event_v" := 'new_draft_created';
       ELSE
@@ -1439,6 +1812,7 @@ CREATE FUNCTION "write_event_initiative_or_draft_created_trigger"()
           SELECT NULL FROM "initiative"
           WHERE "issue_id" = "initiative_row"."issue_id"
           AND "id" != "initiative_row"."id"
+          FOR SHARE
         ) THEN
           "event_v" := 'initiative_created_in_existing_issue';
         ELSE
@@ -1447,14 +1821,14 @@ CREATE FUNCTION "write_event_initiative_or_draft_created_trigger"()
       END IF;
       INSERT INTO "event" (
           "event", "member_id",
-          "issue_id", "state", "initiative_id", "draft_id"
+          "unit_id", "area_id", "issue_id", "state",
+          "initiative_id", "draft_id"
         ) VALUES (
-          "event_v",
-          NEW."author_id",
-          "initiative_row"."issue_id",
-          "issue_row"."state",
-          "initiative_row"."id",
-          NEW."id" );
+          "event_v", NEW."author_id",
+          "area_row"."unit_id", "issue_row"."area_id",
+          "initiative_row"."issue_id", "issue_row"."state",
+          NEW."initiative_id", NEW."id"
+        );
       RETURN NULL;
     END;
   $$;
@@ -1472,22 +1846,26 @@ CREATE FUNCTION "write_event_initiative_revoked_trigger"()
   LANGUAGE 'plpgsql' VOLATILE AS $$
     DECLARE
       "issue_row"  "issue"%ROWTYPE;
+      "area_row"   "area"%ROWTYPE;
       "draft_id_v" "draft"."id"%TYPE;
     BEGIN
       IF OLD."revoked" ISNULL AND NEW."revoked" NOTNULL THEN
         SELECT * INTO "issue_row" FROM "issue"
-          WHERE "id" = NEW."issue_id";
+          WHERE "id" = NEW."issue_id" FOR SHARE;
+        SELECT * INTO "area_row" FROM "area"
+          WHERE "id" = "issue_row"."area_id" FOR SHARE;
         SELECT "id" INTO "draft_id_v" FROM "current_draft"
-          WHERE "initiative_id" = NEW."id";
+          WHERE "initiative_id" = NEW."id" FOR SHARE;
         INSERT INTO "event" (
-            "event", "member_id", "issue_id", "state", "initiative_id", "draft_id"
+            "event", "member_id",
+            "unit_id", "area_id", "issue_id", "state",
+            "initiative_id", "draft_id"
           ) VALUES (
-            'initiative_revoked',
-            NEW."revoked_by_member_id",
-            NEW."issue_id",
-            "issue_row"."state",
-            NEW."id",
-            "draft_id_v");
+            'initiative_revoked', NEW."revoked_by_member_id",
+            "area_row"."unit_id", "issue_row"."area_id",
+            NEW."issue_id", "issue_row"."state",
+            NEW."id", "draft_id_v"
+          );
       END IF;
       RETURN NULL;
     END;
@@ -1507,21 +1885,24 @@ CREATE FUNCTION "write_event_suggestion_created_trigger"()
     DECLARE
       "initiative_row" "initiative"%ROWTYPE;
       "issue_row"      "issue"%ROWTYPE;
+      "area_row"       "area"%ROWTYPE;
     BEGIN
       SELECT * INTO "initiative_row" FROM "initiative"
-        WHERE "id" = NEW."initiative_id";
+        WHERE "id" = NEW."initiative_id" FOR SHARE;
       SELECT * INTO "issue_row" FROM "issue"
-        WHERE "id" = "initiative_row"."issue_id";
+        WHERE "id" = "initiative_row"."issue_id" FOR SHARE;
+      SELECT * INTO "area_row" FROM "area"
+        WHERE "id" = "issue_row"."area_id" FOR SHARE;
       INSERT INTO "event" (
           "event", "member_id",
-          "issue_id", "state", "initiative_id", "suggestion_id"
+          "unit_id", "area_id", "issue_id", "state",
+          "initiative_id", "suggestion_id"
         ) VALUES (
-          'suggestion_created',
-          NEW."author_id",
-          "initiative_row"."issue_id",
-          "issue_row"."state",
-          "initiative_row"."id",
-          NEW."id" );
+          'suggestion_created', NEW."author_id",
+          "area_row"."unit_id", "issue_row"."area_id",
+          "initiative_row"."issue_id", "issue_row"."state",
+          NEW."initiative_id", NEW."id"
+        );
       RETURN NULL;
     END;
   $$;
@@ -1534,10 +1915,673 @@ COMMENT ON FUNCTION "write_event_suggestion_created_trigger"()      IS 'Implemen
 COMMENT ON TRIGGER "write_event_suggestion_created" ON "suggestion" IS 'Create entry in "event" table on suggestion creation';
 
 
+CREATE FUNCTION "write_event_suggestion_removed_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "initiative_row" "initiative"%ROWTYPE;
+      "issue_row"      "issue"%ROWTYPE;
+      "area_row"       "area"%ROWTYPE;
+    BEGIN
+      SELECT * INTO "initiative_row" FROM "initiative"
+        WHERE "id" = OLD."initiative_id" FOR SHARE;
+      IF "initiative_row"."id" NOTNULL THEN
+        SELECT * INTO "issue_row" FROM "issue"
+          WHERE "id" = "initiative_row"."issue_id" FOR SHARE;
+        SELECT * INTO "area_row" FROM "area"
+          WHERE "id" = "issue_row"."area_id" FOR SHARE;
+        INSERT INTO "event" (
+            "event",
+            "unit_id", "area_id", "issue_id", "state",
+            "initiative_id", "suggestion_id"
+          ) VALUES (
+            'suggestion_removed',
+            "area_row"."unit_id", "issue_row"."area_id",
+            "initiative_row"."issue_id", "issue_row"."state",
+            OLD."initiative_id", OLD."id"
+          );
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_suggestion_removed"
+  AFTER DELETE ON "suggestion" FOR EACH ROW EXECUTE PROCEDURE
+  "write_event_suggestion_removed_trigger"();
+
+COMMENT ON FUNCTION "write_event_suggestion_removed_trigger"()      IS 'Implementation of trigger "write_event_suggestion_removed" on table "issue"';
+COMMENT ON TRIGGER "write_event_suggestion_removed" ON "suggestion" IS 'Create entry in "event" table on suggestion creation';
+
+
+CREATE FUNCTION "write_event_member_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      IF TG_OP = 'INSERT' THEN
+        IF NEW."activated" NOTNULL THEN
+          INSERT INTO "event" ("event", "member_id")
+            VALUES ('member_activated', NEW."id");
+        END IF;
+        IF NEW."active" THEN
+          INSERT INTO "event" ("event", "member_id", "boolean_value")
+            VALUES ('member_active', NEW."id", TRUE);
+        END IF;
+      ELSIF TG_OP = 'UPDATE' THEN
+        IF OLD."id" != NEW."id" THEN
+          RAISE EXCEPTION 'Cannot change member ID';
+        END IF;
+        IF OLD."name" != NEW."name" THEN
+          INSERT INTO "event" (
+            "event", "member_id", "text_value", "old_text_value"
+          ) VALUES (
+            'member_name_updated', NEW."id", NEW."name", OLD."name"
+          );
+        END IF;
+        IF OLD."active" != NEW."active" THEN
+          INSERT INTO "event" ("event", "member_id", "boolean_value") VALUES (
+            'member_active', NEW."id", NEW."active"
+          );
+        END IF;
+        IF
+          OLD."activated" NOTNULL AND
+          NEW."last_login"      ISNULL AND
+          NEW."login"           ISNULL AND
+          NEW."authority_login" ISNULL AND
+          NEW."locked"          = TRUE
+        THEN
+          INSERT INTO "event" ("event", "member_id")
+            VALUES ('member_removed', NEW."id");
+        END IF;
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_member"
+  AFTER INSERT OR UPDATE ON "member" FOR EACH ROW EXECUTE PROCEDURE
+  "write_event_member_trigger"();
+
+COMMENT ON FUNCTION "write_event_member_trigger"()  IS 'Implementation of trigger "write_event_member" on table "member"';
+COMMENT ON TRIGGER "write_event_member" ON "member" IS 'Create entries in "event" table on insertion to member table';
+
+
+CREATE FUNCTION "write_event_member_profile_updated_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      IF TG_OP = 'DELETE' OR TG_OP = 'UPDATE' THEN
+        IF EXISTS (SELECT NULL FROM "member" WHERE "id" = OLD."member_id") THEN
+          INSERT INTO "event" ("event", "member_id") VALUES (
+            'member_profile_updated', OLD."member_id"
+          );
+        END IF;
+      END IF;
+      IF TG_OP = 'UPDATE' THEN
+        IF OLD."member_id" = NEW."member_id" THEN
+          RETURN NULL;
+        END IF;
+      END IF;
+      IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+        INSERT INTO "event" ("event", "member_id") VALUES (
+          'member_profile_updated', NEW."member_id"
+        );
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_member_profile_updated"
+  AFTER INSERT OR UPDATE OR DELETE ON "member_profile"
+  FOR EACH ROW EXECUTE PROCEDURE
+  "write_event_member_profile_updated_trigger"();
+
+COMMENT ON FUNCTION "write_event_member_profile_updated_trigger"()          IS 'Implementation of trigger "write_event_member_profile_updated" on table "member_profile"';
+COMMENT ON TRIGGER "write_event_member_profile_updated" ON "member_profile" IS 'Creates entries in "event" table on member profile update';
+
+
+CREATE FUNCTION "write_event_member_image_updated_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      IF TG_OP = 'DELETE' OR TG_OP = 'UPDATE' THEN
+        IF NOT OLD."scaled" THEN
+          IF EXISTS (SELECT NULL FROM "member" WHERE "id" = OLD."member_id") THEN
+            INSERT INTO "event" ("event", "member_id") VALUES (
+              'member_image_updated', OLD."member_id"
+            );
+          END IF;
+        END IF;
+      END IF;
+      IF TG_OP = 'UPDATE' THEN
+        IF
+          OLD."member_id" = NEW."member_id" AND
+          OLD."scaled" = NEW."scaled"
+        THEN
+          RETURN NULL;
+        END IF;
+      END IF;
+      IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+        IF NOT NEW."scaled" THEN
+          INSERT INTO "event" ("event", "member_id") VALUES (
+            'member_image_updated', NEW."member_id"
+          );
+        END IF;
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_member_image_updated"
+  AFTER INSERT OR UPDATE OR DELETE ON "member_image"
+  FOR EACH ROW EXECUTE PROCEDURE
+  "write_event_member_image_updated_trigger"();
+
+COMMENT ON FUNCTION "write_event_member_image_updated_trigger"()        IS 'Implementation of trigger "write_event_member_image_updated" on table "member_image"';
+COMMENT ON TRIGGER "write_event_member_image_updated" ON "member_image" IS 'Creates entries in "event" table on member image update';
+
+
+CREATE FUNCTION "write_event_interest_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "issue_row" "issue"%ROWTYPE;
+      "area_row"  "area"%ROWTYPE;
+    BEGIN
+      IF TG_OP = 'UPDATE' THEN
+        IF OLD = NEW THEN
+          RETURN NULL;
+        END IF;
+      END IF;
+      IF TG_OP = 'DELETE' OR TG_OP = 'UPDATE' THEN
+        SELECT * INTO "issue_row" FROM "issue"
+          WHERE "id" = OLD."issue_id" FOR SHARE;
+        SELECT * INTO "area_row" FROM "area"
+          WHERE "id" = "issue_row"."area_id" FOR SHARE;
+        IF "issue_row"."id" NOTNULL THEN
+          INSERT INTO "event" (
+              "event", "member_id",
+              "unit_id", "area_id", "issue_id", "state",
+              "boolean_value"
+            ) VALUES (
+              'interest', OLD."member_id",
+              "area_row"."unit_id", "issue_row"."area_id",
+              OLD."issue_id", "issue_row"."state",
+              FALSE
+            );
+        END IF;
+      END IF;
+      IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+        SELECT * INTO "issue_row" FROM "issue"
+          WHERE "id" = NEW."issue_id" FOR SHARE;
+        SELECT * INTO "area_row" FROM "area"
+          WHERE "id" = "issue_row"."area_id" FOR SHARE;
+        INSERT INTO "event" (
+            "event", "member_id",
+            "unit_id", "area_id", "issue_id", "state",
+            "boolean_value"
+          ) VALUES (
+            'interest', NEW."member_id",
+            "area_row"."unit_id", "issue_row"."area_id",
+            NEW."issue_id", "issue_row"."state",
+            TRUE
+          );
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_interest"
+  AFTER INSERT OR UPDATE OR DELETE ON "interest" FOR EACH ROW EXECUTE PROCEDURE
+  "write_event_interest_trigger"();
+
+COMMENT ON FUNCTION "write_event_interest_trigger"()  IS 'Implementation of trigger "write_event_interest_inserted" on table "interest"';
+COMMENT ON TRIGGER "write_event_interest" ON "interest" IS 'Create entry in "event" table on adding or removing interest';
+
+
+CREATE FUNCTION "write_event_initiator_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "initiative_row" "initiative"%ROWTYPE;
+      "issue_row"      "issue"%ROWTYPE;
+      "area_row"       "area"%ROWTYPE;
+    BEGIN
+      IF TG_OP = 'UPDATE' THEN
+        IF
+          OLD."initiative_id" = NEW."initiative_id" AND
+          OLD."member_id" = NEW."member_id" AND
+          coalesce(OLD."accepted", FALSE) = coalesce(NEW."accepted", FALSE)
+        THEN
+          RETURN NULL;
+        END IF;
+      END IF;
+      IF (TG_OP = 'DELETE' OR TG_OP = 'UPDATE') AND NOT "accepted_v" THEN
+        IF coalesce(OLD."accepted", FALSE) = TRUE THEN
+          SELECT * INTO "initiative_row" FROM "initiative"
+            WHERE "id" = OLD."initiative_id" FOR SHARE;
+          IF "initiative_row"."id" NOTNULL THEN
+            SELECT * INTO "issue_row" FROM "issue"
+              WHERE "id" = "initiative_row"."issue_id" FOR SHARE;
+            SELECT * INTO "area_row" FROM "area"
+              WHERE "id" = "issue_row"."area_id" FOR SHARE;
+            INSERT INTO "event" (
+                "event", "member_id",
+                "unit_id", "area_id", "issue_id", "state",
+                "initiative_id", "boolean_value"
+              ) VALUES (
+                'initiator', OLD."member_id",
+                "area_row"."unit_id", "issue_row"."area_id",
+                "issue_row"."id", "issue_row"."state",
+                OLD."initiative_id", FALSE
+              );
+          END IF;
+        END IF;
+      END IF;
+      IF TG_OP = 'UPDATE' AND NOT "rejected_v" THEN
+        IF coalesce(NEW."accepted", FALSE) = TRUE THEN
+          SELECT * INTO "initiative_row" FROM "initiative"
+            WHERE "id" = NEW."initiative_id" FOR SHARE;
+          SELECT * INTO "issue_row" FROM "issue"
+            WHERE "id" = "initiative_row"."issue_id" FOR SHARE;
+          SELECT * INTO "area_row" FROM "area"
+            WHERE "id" = "issue_row"."area_id" FOR SHARE;
+          INSERT INTO "event" (
+              "event", "member_id",
+              "unit_id", "area_id", "issue_id", "state",
+              "initiative_id", "boolean_value"
+            ) VALUES (
+              'initiator', NEW."member_id",
+              "area_row"."unit_id", "issue_row"."area_id",
+              "issue_row"."id", "issue_row"."state",
+              NEW."initiative_id", TRUE
+            );
+        END IF;
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_initiator"
+  AFTER UPDATE OR DELETE ON "initiator" FOR EACH ROW EXECUTE PROCEDURE
+  "write_event_initiator_trigger"();
+
+COMMENT ON FUNCTION "write_event_initiator_trigger"()     IS 'Implementation of trigger "write_event_initiator" on table "initiator"';
+COMMENT ON TRIGGER "write_event_initiator" ON "initiator" IS 'Create entry in "event" table when accepting or removing initiatorship (NOTE: trigger does not fire on INSERT to avoid events on initiative creation)';
+
+
+CREATE FUNCTION "write_event_support_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "issue_row" "issue"%ROWTYPE;
+      "area_row"  "area"%ROWTYPE;
+    BEGIN
+      IF TG_OP = 'UPDATE' THEN
+        IF
+          OLD."initiative_id" = NEW."initiative_id" AND
+          OLD."member_id" = NEW."member_id"
+        THEN
+          IF OLD."draft_id" != NEW."draft_id" THEN
+            SELECT * INTO "issue_row" FROM "issue"
+              WHERE "id" = NEW."issue_id" FOR SHARE;
+            SELECT * INTO "area_row" FROM "area"
+              WHERE "id" = "issue_row"."area_id" FOR SHARE;
+            INSERT INTO "event" (
+                "event", "member_id",
+                "unit_id", "area_id", "issue_id", "state",
+                "initiative_id", "draft_id"
+              ) VALUES (
+                'support_updated', NEW."member_id",
+                "area_row"."unit_id", "issue_row"."area_id",
+                "issue_row"."id", "issue_row"."state",
+                NEW."initiative_id", NEW."draft_id"
+              );
+          END IF;
+          RETURN NULL;
+        END IF;
+      END IF;
+      IF TG_OP = 'DELETE' OR TG_OP = 'UPDATE' THEN
+        IF EXISTS (
+          SELECT NULL FROM "initiative" WHERE "id" = OLD."initiative_id"
+          FOR SHARE
+        ) THEN
+          SELECT * INTO "issue_row" FROM "issue"
+            WHERE "id" = OLD."issue_id" FOR SHARE;
+          SELECT * INTO "area_row" FROM "area"
+            WHERE "id" = "issue_row"."area_id" FOR SHARE;
+          INSERT INTO "event" (
+              "event", "member_id",
+              "unit_id", "area_id", "issue_id", "state",
+              "initiative_id", "draft_id", "boolean_value"
+            ) VALUES (
+              'support', OLD."member_id",
+              "area_row"."unit_id", "issue_row"."area_id",
+              "issue_row"."id", "issue_row"."state",
+              OLD."initiative_id", OLD."draft_id", FALSE
+            );
+        END IF;
+      END IF;
+      IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+        SELECT * INTO "issue_row" FROM "issue"
+          WHERE "id" = NEW."issue_id" FOR SHARE;
+        SELECT * INTO "area_row" FROM "area"
+          WHERE "id" = "issue_row"."area_id" FOR SHARE;
+        INSERT INTO "event" (
+            "event", "member_id",
+            "unit_id", "area_id", "issue_id", "state",
+            "initiative_id", "draft_id", "boolean_value"
+          ) VALUES (
+            'support', NEW."member_id",
+            "area_row"."unit_id", "issue_row"."area_id",
+            "issue_row"."id", "issue_row"."state",
+            NEW."initiative_id", NEW."draft_id", TRUE
+          );
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_support"
+  AFTER INSERT OR UPDATE OR DELETE ON "supporter" FOR EACH ROW EXECUTE PROCEDURE
+  "write_event_support_trigger"();
+
+COMMENT ON FUNCTION "write_event_support_trigger"()     IS 'Implementation of trigger "write_event_support" on table "supporter"';
+COMMENT ON TRIGGER "write_event_support" ON "supporter" IS 'Create entry in "event" table when adding, updating, or removing support';
+
+
+CREATE FUNCTION "write_event_suggestion_rated_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "same_pkey_v"    BOOLEAN = FALSE;
+      "initiative_row" "initiative"%ROWTYPE;
+      "issue_row"      "issue"%ROWTYPE;
+      "area_row"       "area"%ROWTYPE;
+    BEGIN
+      IF TG_OP = 'UPDATE' THEN
+        IF
+          OLD."suggestion_id" = NEW."suggestion_id" AND
+          OLD."member_id"     = NEW."member_id"
+        THEN
+          IF
+            OLD."degree"    = NEW."degree" AND
+            OLD."fulfilled" = NEW."fulfilled"
+          THEN
+            RETURN NULL;
+          END IF;
+          "same_pkey_v" := TRUE;
+        END IF;
+      END IF;
+      IF (TG_OP = 'DELETE' OR TG_OP = 'UPDATE') AND NOT "same_pkey_v" THEN
+        IF EXISTS (
+          SELECT NULL FROM "suggestion" WHERE "id" = OLD."suggestion_id"
+          FOR SHARE
+        ) THEN
+          SELECT * INTO "initiative_row" FROM "initiative"
+            WHERE "id" = OLD."initiative_id" FOR SHARE;
+          SELECT * INTO "issue_row" FROM "issue"
+            WHERE "id" = "initiative_row"."issue_id" FOR SHARE;
+          SELECT * INTO "area_row" FROM "area"
+            WHERE "id" = "issue_row"."area_id" FOR SHARE;
+          INSERT INTO "event" (
+              "event", "member_id",
+              "unit_id", "area_id", "issue_id", "state",
+              "initiative_id", "suggestion_id",
+              "boolean_value", "numeric_value"
+            ) VALUES (
+              'suggestion_rated', OLD."member_id",
+              "area_row"."unit_id", "issue_row"."area_id",
+              "initiative_row"."issue_id", "issue_row"."state",
+              OLD."initiative_id", OLD."suggestion_id",
+              NULL, 0
+            );
+        END IF;
+      END IF;
+      IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+        SELECT * INTO "initiative_row" FROM "initiative"
+          WHERE "id" = NEW."initiative_id" FOR SHARE;
+        SELECT * INTO "issue_row" FROM "issue"
+          WHERE "id" = "initiative_row"."issue_id" FOR SHARE;
+        SELECT * INTO "area_row" FROM "area"
+          WHERE "id" = "issue_row"."area_id" FOR SHARE;
+        INSERT INTO "event" (
+            "event", "member_id",
+            "unit_id", "area_id", "issue_id", "state",
+            "initiative_id", "suggestion_id",
+            "boolean_value", "numeric_value"
+          ) VALUES (
+            'suggestion_rated', NEW."member_id",
+            "area_row"."unit_id", "issue_row"."area_id",
+            "initiative_row"."issue_id", "issue_row"."state",
+            NEW."initiative_id", NEW."suggestion_id",
+            NEW."fulfilled", NEW."degree"
+          );
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_suggestion_rated"
+  AFTER INSERT OR UPDATE OR DELETE ON "opinion" FOR EACH ROW EXECUTE PROCEDURE
+  "write_event_suggestion_rated_trigger"();
+
+COMMENT ON FUNCTION "write_event_suggestion_rated_trigger"()   IS 'Implementation of trigger "write_event_suggestion_rated" on table "opinion"';
+COMMENT ON TRIGGER "write_event_suggestion_rated" ON "opinion" IS 'Create entry in "event" table when adding, updating, or removing support';
+
+
+CREATE FUNCTION "write_event_delegation_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "issue_row" "issue"%ROWTYPE;
+      "area_row"  "area"%ROWTYPE;
+    BEGIN
+      IF TG_OP = 'DELETE' THEN
+        IF EXISTS (
+          SELECT NULL FROM "member" WHERE "id" = OLD."truster_id"
+        ) AND (CASE OLD."scope"
+          WHEN 'unit'::"delegation_scope" THEN EXISTS (
+            SELECT NULL FROM "unit" WHERE "id" = OLD."unit_id"
+          )
+          WHEN 'area'::"delegation_scope" THEN EXISTS (
+            SELECT NULL FROM "area" WHERE "id" = OLD."area_id"
+          )
+          WHEN 'issue'::"delegation_scope" THEN EXISTS (
+            SELECT NULL FROM "issue" WHERE "id" = OLD."issue_id"
+          )
+        END) THEN
+          SELECT * INTO "issue_row" FROM "issue"
+            WHERE "id" = OLD."issue_id" FOR SHARE;
+          SELECT * INTO "area_row" FROM "area"
+            WHERE "id" = COALESCE(OLD."area_id", "issue_row"."area_id")
+            FOR SHARE;
+          INSERT INTO "event" (
+              "event", "member_id", "scope",
+              "unit_id", "area_id", "issue_id", "state",
+              "boolean_value"
+            ) VALUES (
+              'delegation', OLD."truster_id", OLD."scope",
+              COALESCE(OLD."unit_id", "area_row"."unit_id"), "area_row"."id",
+              OLD."issue_id", "issue_row"."state",
+              FALSE
+            );
+        END IF;
+      ELSE
+        SELECT * INTO "issue_row" FROM "issue"
+          WHERE "id" = NEW."issue_id" FOR SHARE;
+        SELECT * INTO "area_row" FROM "area"
+          WHERE "id" = COALESCE(NEW."area_id", "issue_row"."area_id")
+          FOR SHARE;
+        INSERT INTO "event" (
+            "event", "member_id", "other_member_id", "scope",
+            "unit_id", "area_id", "issue_id", "state",
+            "boolean_value"
+          ) VALUES (
+            'delegation', NEW."truster_id", NEW."trustee_id", NEW."scope",
+            COALESCE(NEW."unit_id", "area_row"."unit_id"), "area_row"."id",
+            NEW."issue_id", "issue_row"."state",
+            TRUE
+          );
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_delegation"
+  AFTER INSERT OR UPDATE OR DELETE ON "delegation" FOR EACH ROW EXECUTE PROCEDURE
+  "write_event_delegation_trigger"();
+
+COMMENT ON FUNCTION "write_event_delegation_trigger"()      IS 'Implementation of trigger "write_event_delegation" on table "delegation"';
+COMMENT ON TRIGGER "write_event_delegation" ON "delegation" IS 'Create entry in "event" table when adding, updating, or removing a delegation';
+
+
+CREATE FUNCTION "write_event_contact_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      IF TG_OP = 'UPDATE' THEN
+        IF
+          OLD."member_id"       = NEW."member_id" AND
+          OLD."other_member_id" = NEW."other_member_id" AND
+          OLD."public"          = NEW."public"
+        THEN
+          RETURN NULL;
+        END IF;
+      END IF;
+      IF TG_OP = 'DELETE' OR TG_OP = 'UPDATE' THEN
+        IF OLD."public" THEN
+          IF EXISTS (
+            SELECT NULL FROM "member" WHERE "id" = OLD."member_id"
+            FOR SHARE
+          ) AND EXISTS (
+            SELECT NULL FROM "member" WHERE "id" = OLD."other_member_id"
+            FOR SHARE
+          ) THEN
+            INSERT INTO "event" (
+                "event", "member_id", "other_member_id", "boolean_value"
+              ) VALUES (
+                'contact', OLD."member_id", OLD."other_member_id", FALSE
+              );
+          END IF;
+        END IF;
+      END IF;
+      IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+        IF NEW."public" THEN
+          INSERT INTO "event" (
+              "event", "member_id", "other_member_id", "boolean_value"
+            ) VALUES (
+              'contact', NEW."member_id", NEW."other_member_id", TRUE
+            );
+        END IF;
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_contact"
+  AFTER INSERT OR UPDATE OR DELETE ON "contact" FOR EACH ROW EXECUTE PROCEDURE
+  "write_event_contact_trigger"();
+
+COMMENT ON FUNCTION "write_event_contact_trigger"()   IS 'Implementation of trigger "write_event_contact" on table "contact"';
+COMMENT ON TRIGGER "write_event_contact" ON "contact" IS 'Create entry in "event" table when adding or removing public contacts';
+
+
+CREATE FUNCTION "send_event_notify_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      EXECUTE 'NOTIFY "event", ''' || NEW."event" || '''';
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "send_notify"
+  AFTER INSERT OR UPDATE ON "event" FOR EACH ROW EXECUTE PROCEDURE
+  "send_event_notify_trigger"();
+
+
 
 ----------------------------
 -- Additional constraints --
 ----------------------------
+
+
+CREATE FUNCTION "delete_extended_scope_tokens_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "system_application_row" "system_application"%ROWTYPE;
+    BEGIN
+      IF OLD."system_application_id" NOTNULL THEN
+        SELECT * FROM "system_application" INTO "system_application_row"
+          WHERE "id" = OLD."system_application_id";
+        DELETE FROM "token"
+          WHERE "member_id" = OLD."member_id"
+          AND "system_application_id" = OLD."system_application_id"
+          AND NOT COALESCE(
+            regexp_split_to_array("scope", E'\\s+') <@
+            regexp_split_to_array(
+              "system_application_row"."automatic_scope", E'\\s+'
+            ),
+            FALSE
+          );
+      END IF;
+      RETURN OLD;
+    END;
+  $$;
+
+CREATE TRIGGER "delete_extended_scope_tokens"
+  BEFORE DELETE ON "member_application" FOR EACH ROW EXECUTE PROCEDURE
+  "delete_extended_scope_tokens_trigger"();
+
+
+CREATE FUNCTION "detach_token_from_session_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      UPDATE "token" SET "session_id" = NULL
+        WHERE "session_id" = OLD."id";
+      RETURN OLD;
+    END;
+  $$;
+
+CREATE TRIGGER "detach_token_from_session"
+  BEFORE DELETE ON "session" FOR EACH ROW EXECUTE PROCEDURE
+  "detach_token_from_session_trigger"();
+
+
+CREATE FUNCTION "delete_non_detached_scope_with_session_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      IF NEW."session_id" ISNULL THEN
+        SELECT coalesce(string_agg("element", ' '), '') INTO NEW."scope"
+          FROM unnest(regexp_split_to_array(NEW."scope", E'\\s+')) AS "element"
+          WHERE "element" LIKE '%_detached';
+      END IF;
+      RETURN NEW;
+    END;
+  $$;
+
+CREATE TRIGGER "delete_non_detached_scope_with_session"
+  BEFORE INSERT OR UPDATE ON "token" FOR EACH ROW EXECUTE PROCEDURE
+  "delete_non_detached_scope_with_session_trigger"();
+
+
+CREATE FUNCTION "delete_token_with_empty_scope_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      IF NEW."scope" = '' THEN
+        DELETE FROM "token" WHERE "id" = NEW."id";
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "delete_token_with_empty_scope"
+  AFTER INSERT OR UPDATE ON "token" FOR EACH ROW EXECUTE PROCEDURE
+  "delete_token_with_empty_scope_trigger"();
 
 
 CREATE FUNCTION "issue_requires_first_initiative_trigger"()
@@ -1774,13 +2818,21 @@ CREATE FUNCTION "delete_snapshot_on_partial_delete_trigger"()
   RETURNS TRIGGER
   LANGUAGE 'plpgsql' VOLATILE AS $$
     BEGIN
+      IF TG_OP = 'UPDATE' THEN
+        IF
+          OLD."snapshot_id" = NEW."snapshot_id" AND
+          OLD."issue_id" = NEW."issue_id"
+        THEN
+          RETURN NULL;
+        END IF;
+      END IF;
       DELETE FROM "snapshot" WHERE "id" = OLD."snapshot_id";
       RETURN NULL;
     END;
   $$;
 
 CREATE TRIGGER "delete_snapshot_on_partial_delete"
-  AFTER DELETE ON "snapshot_issue"
+  AFTER UPDATE OR DELETE ON "snapshot_issue"
   FOR EACH ROW EXECUTE PROCEDURE
   "delete_snapshot_on_partial_delete_trigger"();
 
@@ -1794,7 +2846,7 @@ COMMENT ON TRIGGER "delete_snapshot_on_partial_delete" ON "snapshot_issue" IS 'D
 ---------------------------------------------------------------
 
 -- NOTE: Frontends should ensure this anyway, but in case of programming
--- errors the following triggers ensure data integrity.
+--       errors the following triggers ensure data integrity.
 
 
 CREATE FUNCTION "forbid_changes_on_closed_issue_trigger"()
@@ -1871,25 +2923,6 @@ COMMENT ON TRIGGER "forbid_changes_on_closed_issue" ON "vote"             IS 'En
 --------------------------------------------------------------------
 
 
-CREATE FUNCTION "autofill_unit_id_from_admission_rule_trigger"()
-  RETURNS TRIGGER
-  LANGUAGE 'plpgsql' VOLATILE AS $$
-    BEGIN
-      IF NEW."unit_id" ISNULL THEN
-        SELECT "unit_id" INTO NEW."unit_id"
-          FROM "admission_rule" WHERE "id" = NEW."admission_rule_id";
-      END IF;
-      RETURN NEW;
-    END;
-  $$;
-
-CREATE TRIGGER "autofill_unit_id" BEFORE INSERT ON "admission_rule_condition"
-  FOR EACH ROW EXECUTE PROCEDURE "autofill_unit_id_from_admission_rule_trigger"();
-
-COMMENT ON FUNCTION "autofill_unit_id_from_admission_rule_trigger"() IS 'Implementation of trigger "autofill_admission_rule_id" on table "admission_rule_entry"';
-COMMENT ON TRIGGER "autofill_unit_id" ON "admission_rule_condition"  IS 'Set "unit_id" field automatically, if NULL';
-
-
 CREATE FUNCTION "autofill_issue_id_trigger"()
   RETURNS TRIGGER
   LANGUAGE 'plpgsql' VOLATILE AS $$
@@ -1946,8 +2979,7 @@ CREATE FUNCTION "copy_current_draft_data"
       PERFORM NULL FROM "initiative" WHERE "id" = "initiative_id_p"
         FOR UPDATE;
       UPDATE "initiative" SET
-        "location1"  = "draft"."location1",
-        "location2"  = "draft"."location2",
+        "location" = "draft"."location",
         "draft_text_search_data" = "draft"."text_search_data"
         FROM "current_draft" AS "draft"
         WHERE "initiative"."id" = "initiative_id_p"
@@ -2129,71 +3161,72 @@ CREATE VIEW "member_to_notify" AS
 COMMENT ON VIEW "member_to_notify" IS 'Filtered "member" table containing only members that are eligible to and wish to receive notifications; NOTE: "notify_email" may still be NULL and might need to be checked by frontend (this allows other means of messaging)';
 
 
-CREATE VIEW "matching_admission_rule_condition" AS
-  SELECT DISTINCT ON ("issue_id", "admission_rule_condition"."admission_rule_id")
-    "issue"."id" AS "issue_id",
-    "admission_rule_condition".*
-  FROM "admission_rule_condition"
-  JOIN "area" ON "admission_rule_condition"."unit_id" = "area"."unit_id"
-  JOIN "issue" ON "area"."id" = "issue"."area_id"
-  WHERE (
-    "admission_rule_condition"."policy_id" ISNULL OR
-    "admission_rule_condition"."policy_id" = "issue"."policy_id"
-  ) AND (
-    "admission_rule_condition"."area_id" ISNULL OR
-    "admission_rule_condition"."area_id" = "area"."id"
-  )
-  ORDER BY
-    "issue_id",
-    "admission_rule_condition"."admission_rule_id",
-    "admission_rule_condition"."policy_id" ISNULL,
-    "admission_rule_condition"."area_id" ISNULL;
+CREATE VIEW "area_quorum" AS
+  SELECT
+    "area"."id" AS "area_id",
+    ceil(
+      "area"."quorum_standard"::FLOAT8 * "quorum_factor"::FLOAT8 ^ (
+        coalesce(
+          ( SELECT sum(
+              ( extract(epoch from "area"."quorum_time")::FLOAT8 /
+                extract(epoch from
+                  ("issue"."accepted"-"issue"."created") +
+                  "issue"."discussion_time" +
+                  "issue"."verification_time" +
+                  "issue"."voting_time"
+                )::FLOAT8
+              ) ^ "area"."quorum_exponent"::FLOAT8
+            )
+            FROM "issue" JOIN "policy"
+            ON "issue"."policy_id" = "policy"."id"
+            WHERE "issue"."area_id" = "area"."id"
+            AND "issue"."accepted" NOTNULL
+            AND "issue"."closed" ISNULL
+            AND "policy"."polling" = FALSE
+          )::FLOAT8, 0::FLOAT8
+        ) / "area"."quorum_issues"::FLOAT8 - 1::FLOAT8
+      ) * CASE WHEN "area"."quorum_den" ISNULL THEN 1 ELSE (
+        SELECT "snapshot"."population"
+        FROM "snapshot"
+        WHERE "snapshot"."area_id" = "area"."id"
+        AND "snapshot"."issue_id" ISNULL
+        ORDER BY "snapshot"."id" DESC
+        LIMIT 1
+      ) END / coalesce("area"."quorum_den", 1)
 
-COMMENT ON VIEW "matching_admission_rule_condition" IS 'Selects the most fitting "admission_rule_condition" for a given pair of "issue" and "admission_rule"';
+    )::INT4 AS "issue_quorum"
+  FROM "area";
+
+COMMENT ON VIEW "area_quorum" IS 'Area-based quorum considering number of open (accepted) issues';
 
 
-CREATE VIEW "applicable_admission_rule" AS
-  SELECT * FROM "admission_rule"
-  WHERE NOT EXISTS (
-    SELECT NULL FROM "issue"
-    JOIN "matching_admission_rule_condition" AS "condition"
-    ON "issue"."id" = "condition"."issue_id"
-    WHERE "condition"."admission_rule_id" = "admission_rule"."id"
-    AND "issue"."accepted" > now() - "condition"."holdoff_time"
-  );
+CREATE VIEW "area_with_unaccepted_issues" AS
+  SELECT DISTINCT ON ("area"."id") "area".*
+  FROM "area" JOIN "issue" ON "area"."id" = "issue"."area_id"
+  WHERE "issue"."state" = 'admission';
 
-COMMENT ON VIEW "applicable_admission_rule" IS 'Filters "admission_rule"s which are not blocked by a recently admitted issue';
+COMMENT ON VIEW "area_with_unaccepted_issues" IS 'All areas with unaccepted open issues (needed for issue admission system)';
 
 
 CREATE VIEW "issue_for_admission" AS
-  SELECT
+  SELECT DISTINCT ON ("issue"."area_id")
     "issue".*,
     max("initiative"."supporter_count") AS "max_supporter_count"
   FROM "issue"
   JOIN "policy" ON "issue"."policy_id" = "policy"."id"
   JOIN "initiative" ON "issue"."id" = "initiative"."issue_id"
   JOIN "area" ON "issue"."area_id" = "area"."id"
-  JOIN "admission_rule_condition"
-  ON "admission_rule_condition"."unit_id" = "area"."unit_id"
-  AND (
-    "admission_rule_condition"."policy_id" ISNULL OR
-    "admission_rule_condition"."policy_id" = "issue"."policy_id"
-  )
-  AND (
-    "admission_rule_condition"."area_id" ISNULL OR
-    "admission_rule_condition"."area_id" = "issue"."area_id"
-  )
-  JOIN "applicable_admission_rule"
-  ON "admission_rule_condition"."admission_rule_id" = "applicable_admission_rule"."id"
   WHERE "issue"."state" = 'admission'::"issue_state"
   AND now() >= "issue"."created" + "issue"."min_admission_time"
   AND "initiative"."supporter_count" >= "policy"."issue_quorum"
+  AND "initiative"."supporter_count" * "policy"."issue_quorum_den" >=
+      "issue"."population" * "policy"."issue_quorum_num"
+  AND "initiative"."supporter_count" >= "area"."issue_quorum"
   AND "initiative"."revoked" ISNULL
   GROUP BY "issue"."id"
-  ORDER BY "max_supporter_count" DESC, "issue"."id"
-  LIMIT 1;
+  ORDER BY "issue"."area_id", "max_supporter_count" DESC, "issue"."id";
 
-COMMENT ON VIEW "issue_for_admission" IS 'Contains up to 1 issue eligible to pass from ''admission'' to ''discussion'' state; needs to be recalculated after admitting the issue in this view';
+COMMENT ON VIEW "issue_for_admission" IS 'Contains up to 1 issue per area eligible to pass from ''admission'' to ''discussion'' state; needs to be recalculated after admitting the issue in this view';
 
 
 CREATE VIEW "unit_delegation" AS
@@ -2275,17 +3308,24 @@ CREATE VIEW "member_count_view" AS
 COMMENT ON VIEW "member_count_view" IS 'View used to update "member_count" table';
 
 
+CREATE VIEW "unit_member" AS
+  SELECT
+    "unit"."id"   AS "unit_id",
+    "member"."id" AS "member_id"
+  FROM "privilege"
+  JOIN "unit"   ON "unit_id"     = "privilege"."unit_id"
+  JOIN "member" ON "member"."id" = "privilege"."member_id"
+  WHERE "privilege"."voting_right" AND "member"."active";
+
+COMMENT ON VIEW "unit_member" IS 'Active members with voting right in a unit';
+
+
 CREATE VIEW "unit_member_count" AS
   SELECT
     "unit"."id" AS "unit_id",
-    count("member"."id") AS "member_count"
-  FROM "unit"
-  LEFT JOIN "privilege"
-  ON "privilege"."unit_id" = "unit"."id" 
-  AND "privilege"."voting_right"
-  LEFT JOIN "member"
-  ON "member"."id" = "privilege"."member_id"
-  AND "member"."active"
+    count("unit_member"."member_id") AS "member_count"
+  FROM "unit" LEFT JOIN "unit_member"
+  ON "unit"."id" = "unit_member"."unit_id"
   GROUP BY "unit"."id";
 
 COMMENT ON VIEW "unit_member_count" IS 'View used to update "member_count" column of "unit" table';
@@ -2431,10 +3471,48 @@ CREATE VIEW "expired_session" AS
   SELECT * FROM "session" WHERE now() > "expiry";
 
 CREATE RULE "delete" AS ON DELETE TO "expired_session" DO INSTEAD
-  DELETE FROM "session" WHERE "ident" = OLD."ident";
+  DELETE FROM "session" WHERE "id" = OLD."id";
 
 COMMENT ON VIEW "expired_session" IS 'View containing all expired sessions where DELETE is possible';
 COMMENT ON RULE "delete" ON "expired_session" IS 'Rule allowing DELETE on rows in "expired_session" view, i.e. DELETE FROM "expired_session"';
+
+
+CREATE VIEW "expired_token" AS
+  SELECT * FROM "token" WHERE now() > "expiry" AND NOT (
+    "token_type" = 'authorization' AND "used" AND EXISTS (
+      SELECT NULL FROM "token" AS "other"
+      WHERE "other"."authorization_token_id" = "id" ) );
+
+CREATE RULE "delete" AS ON DELETE TO "expired_token" DO INSTEAD
+  DELETE FROM "token" WHERE "id" = OLD."id";
+
+COMMENT ON VIEW "expired_token" IS 'View containing all expired tokens where DELETE is possible; Note that used authorization codes must not be deleted if still referred to by other tokens';
+
+
+CREATE VIEW "unused_snapshot" AS
+  SELECT "snapshot".* FROM "snapshot"
+  LEFT JOIN "issue"
+  ON "snapshot"."id" = "issue"."latest_snapshot_id"
+  OR "snapshot"."id" = "issue"."admission_snapshot_id"
+  OR "snapshot"."id" = "issue"."half_freeze_snapshot_id"
+  OR "snapshot"."id" = "issue"."full_freeze_snapshot_id"
+  WHERE "issue"."id" ISNULL;
+
+CREATE RULE "delete" AS ON DELETE TO "unused_snapshot" DO INSTEAD
+  DELETE FROM "snapshot" WHERE "id" = OLD."id";
+
+COMMENT ON VIEW "unused_snapshot" IS 'Snapshots that are not referenced by any issue (either as latest snapshot or as snapshot at phase/state change)';
+
+
+CREATE VIEW "expired_snapshot" AS
+  SELECT "unused_snapshot".* FROM "unused_snapshot" CROSS JOIN "system_setting"
+  WHERE "unused_snapshot"."calculated" <
+    now() - "system_setting"."snapshot_retention";
+
+CREATE RULE "delete" AS ON DELETE TO "expired_snapshot" DO INSTEAD
+  DELETE FROM "snapshot" WHERE "id" = OLD."id";
+
+COMMENT ON VIEW "expired_snapshot" IS 'Contains "unused_snapshot"s that are older than "system_setting"."snapshot_retention" (for deletion)';
 
 
 CREATE VIEW "open_issue" AS
@@ -2911,7 +3989,7 @@ CREATE TYPE "delegation_chain_row" AS (
 COMMENT ON TYPE "delegation_chain_row" IS 'Type of rows returned by "delegation_chain" function';
 
 COMMENT ON COLUMN "delegation_chain_row"."index"         IS 'Index starting with 0 and counting up';
-COMMENT ON COLUMN "delegation_chain_row"."participation" IS 'In case of delegation chains for issues: interest, for areas: membership, for global delegation chains: always null';
+COMMENT ON COLUMN "delegation_chain_row"."participation" IS 'In case of delegation chains for issues: interest; for area and global delegation chains: always null';
 COMMENT ON COLUMN "delegation_chain_row"."overridden"    IS 'True, if an entry with lower index has "participation" set to true';
 COMMENT ON COLUMN "delegation_chain_row"."scope_in"      IS 'Scope of used incoming delegation';
 COMMENT ON COLUMN "delegation_chain_row"."scope_out"     IS 'Scope of used outgoing delegation';
@@ -3087,11 +4165,6 @@ CREATE FUNCTION "delegation_chain"
                 AND "unit_id" = "unit_id_v";
             END IF;
           ELSIF "scope_v" = 'area' THEN
-            "output_row"."participation" := EXISTS (
-              SELECT NULL FROM "membership"
-              WHERE "area_id" = "area_id_p"
-              AND "member_id" = "output_row"."member_id"
-            );
             IF "simulate_here_v" THEN
               IF "simulate_trustee_id_p" ISNULL THEN
                 SELECT * INTO "delegation_row" FROM "delegation"
@@ -3394,18 +4467,6 @@ CREATE FUNCTION "get_initiatives_for_notification"
         SELECT "id" INTO "last_suggestion_id_v" FROM "suggestion"
           WHERE "suggestion"."initiative_id" = "result_row"."initiative_id"
           ORDER BY "id" DESC LIMIT 1;
-        /* compatibility with PostgreSQL 9.1 */
-        DELETE FROM "notification_initiative_sent"
-          WHERE "member_id" = "recipient_id_p"
-          AND "initiative_id" = "result_row"."initiative_id";
-        INSERT INTO "notification_initiative_sent"
-          ("member_id", "initiative_id", "last_draft_id", "last_suggestion_id")
-          VALUES (
-            "recipient_id_p",
-            "result_row"."initiative_id",
-            "last_draft_id_v",
-            "last_suggestion_id_v" );
-        /* TODO: use alternative code below, requires PostgreSQL 9.5 or higher
         INSERT INTO "notification_initiative_sent"
           ("member_id", "initiative_id", "last_draft_id", "last_suggestion_id")
           VALUES (
@@ -3416,7 +4477,6 @@ CREATE FUNCTION "get_initiatives_for_notification"
           ON CONFLICT ("member_id", "initiative_id") DO UPDATE SET
             "last_draft_id" = "last_draft_id_v",
             "last_suggestion_id" = "last_suggestion_id_v";
-        */
         RETURN NEXT "result_row";
       END LOOP;
       DELETE FROM "notification_initiative_sent"
@@ -3479,7 +4539,22 @@ CREATE FUNCTION "calculate_member_counts"()
     END;
   $$;
 
-COMMENT ON FUNCTION "calculate_member_counts"() IS 'Updates "member_count" table and "member_count" column of table "area" by materializing data from views "member_count_view" and "area_member_count"';
+COMMENT ON FUNCTION "calculate_member_counts"() IS 'Updates "member_count" table and "member_count" column of table "area" by materializing data from views "member_count_view" and "unit_member_count"';
+
+
+CREATE FUNCTION "calculate_area_quorum"()
+  RETURNS VOID
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      PERFORM "dont_require_transaction_isolation"();
+      UPDATE "area" SET "issue_quorum" = "view"."issue_quorum"
+        FROM "area_quorum" AS "view"
+        WHERE "view"."area_id" = "area"."id";
+      RETURN;
+    END;
+  $$;
+
+COMMENT ON FUNCTION "calculate_area_quorum"() IS 'Calculate column "issue_quorum" in table "area" from view "area_quorum"';
 
 
 
@@ -3726,20 +4801,43 @@ COMMENT ON FUNCTION "weight_of_added_delegations_for_snapshot"
 
 
 CREATE FUNCTION "take_snapshot"
-  ( "issue_id_p" "issue"."id"%TYPE )
+  ( "issue_id_p" "issue"."id"%TYPE,
+    "area_id_p"  "area"."id"%TYPE = NULL )
   RETURNS "snapshot"."id"%TYPE
   LANGUAGE 'plpgsql' VOLATILE AS $$
     DECLARE
+      "area_id_v"     "area"."id"%TYPE;
+      "unit_id_v"     "unit"."id"%TYPE;
       "snapshot_id_v" "snapshot"."id"%TYPE;
       "issue_id_v"    "issue"."id"%TYPE;
       "member_id_v"   "member"."id"%TYPE;
     BEGIN
+      IF "issue_id_p" NOTNULL AND "area_id_p" NOTNULL THEN
+        RAISE EXCEPTION 'One of "issue_id_p" and "area_id_p" must be NULL';
+      END IF;
       PERFORM "require_transaction_isolation"();
-      INSERT INTO "snapshot" DEFAULT VALUES
+      IF "issue_id_p" ISNULL THEN
+        "area_id_v" := "area_id_p";
+      ELSE
+        SELECT "area_id" INTO "area_id_v"
+          FROM "issue" WHERE "id" = "issue_id_p";
+      END IF;
+      SELECT "unit_id" INTO "unit_id_v" FROM "area" WHERE "id" = "area_id_p";
+      INSERT INTO "snapshot" ("area_id", "issue_id")
+        VALUES ("area_id_v", "issue_id_p")
         RETURNING "id" INTO "snapshot_id_v";
+      INSERT INTO "snapshot_population" ("snapshot_id", "member_id")
+        SELECT "snapshot_id_v", "member_id"
+        FROM "unit_member" WHERE "unit_id" = "unit_id_v";
+      UPDATE "snapshot" SET
+        "population" = (
+          SELECT count(1) FROM "snapshot_population"
+          WHERE "snapshot_id" = "snapshot_id_v"
+        ) WHERE "id" = "snapshot_id_v";
       FOR "issue_id_v" IN
         SELECT "id" FROM "issue"
         WHERE CASE WHEN "issue_id_p" ISNULL THEN
+          "area_id" = "area_id_p" AND
           "state" = 'admission'
         ELSE
           "id" = "issue_id_p"
@@ -3894,8 +4992,9 @@ CREATE FUNCTION "take_snapshot"
   $$;
 
 COMMENT ON FUNCTION "take_snapshot"
-  ( "issue"."id"%TYPE )
-  IS 'This function creates a new interest/supporter snapshot of a particular issue, or, if the argument is NULL, for all issues in ''admission'' phase. It must be executed with TRANSACTION ISOLATION LEVEL REPEATABLE READ. The snapshot must later be finished by calling "finish_snapshot" for every issue.';
+  ( "issue"."id"%TYPE,
+    "area"."id"%TYPE )
+  IS 'This function creates a new interest/supporter snapshot of a particular issue, or, if the first argument is NULL, for all issues in ''admission'' phase of the area given as second argument. It must be executed with TRANSACTION ISOLATION LEVEL REPEATABLE READ. The snapshot must later be finished by calling "finish_snapshot" for every issue.';
 
 
 CREATE FUNCTION "finish_snapshot"
@@ -3905,18 +5004,19 @@ CREATE FUNCTION "finish_snapshot"
     DECLARE
       "snapshot_id_v" "snapshot"."id"%TYPE;
     BEGIN
+      -- NOTE: function does not require snapshot isolation but we don't call
+      --       "dont_require_snapshot_isolation" here because this function is
+      --       also invoked by "check_issue"
       LOCK TABLE "snapshot" IN EXCLUSIVE MODE;
       SELECT "id" INTO "snapshot_id_v" FROM "snapshot"
         ORDER BY "id" DESC LIMIT 1;
       UPDATE "issue" SET
+        "calculated" = "snapshot"."calculated",
         "latest_snapshot_id" = "snapshot_id_v",
-        "population" = (
-          SELECT coalesce(sum("weight"), 0)
-          FROM "direct_interest_snapshot"
-          WHERE "snapshot_id" = "snapshot_id_v"
-          AND "issue_id" = "issue_id_p"
-        )
-        WHERE "id" = "issue_id_p";
+        "population" = "snapshot"."population"
+        FROM "snapshot"
+        WHERE "issue"."id" = "issue_id_p"
+        AND "snapshot"."id" = "snapshot_id_v";
       UPDATE "initiative" SET
         "supporter_count" = (
           SELECT coalesce(sum("di"."weight"), 0)
@@ -4715,7 +5815,8 @@ COMMENT ON FUNCTION "calculate_ranks"
 -----------------------------
 
 
-CREATE FUNCTION "issue_admission"()
+CREATE FUNCTION "issue_admission"
+  ( "area_id_p" "area"."id"%TYPE )
   RETURNS BOOLEAN
   LANGUAGE 'plpgsql' VOLATILE AS $$
     DECLARE
@@ -4723,7 +5824,12 @@ CREATE FUNCTION "issue_admission"()
     BEGIN
       PERFORM "dont_require_transaction_isolation"();
       LOCK TABLE "snapshot" IN EXCLUSIVE MODE;
-      SELECT "id" INTO "issue_id_v" FROM "issue_for_admission" LIMIT 1;
+      UPDATE "area" SET "issue_quorum" = "view"."issue_quorum"
+        FROM "area_quorum" AS "view"
+        WHERE "area"."id" = "view"."area_id"
+        AND "area"."id" = "area_id_p";
+      SELECT "id" INTO "issue_id_v" FROM "issue_for_admission"
+        WHERE "area_id" = "area_id_p";
       IF "issue_id_v" ISNULL THEN RETURN FALSE; END IF;
       UPDATE "issue" SET
         "admission_snapshot_id" = "latest_snapshot_id",
@@ -4735,7 +5841,9 @@ CREATE FUNCTION "issue_admission"()
     END;
   $$;
 
-COMMENT ON FUNCTION "issue_admission"() IS 'Checks if an issue can be admitted for further discussion; returns TRUE on success in which case the function must be called again until it returns FALSE';
+COMMENT ON FUNCTION "issue_admission"
+  ( "area"."id"%TYPE )
+  IS 'Checks if an issue in the area can be admitted for further discussion; returns TRUE on success in which case the function must be called again until it returns FALSE';
 
 
 CREATE TYPE "check_issue_persistence" AS (
@@ -4848,7 +5956,8 @@ CREATE FUNCTION "check_issue"
             LOOP
               IF
                 "initiative_row"."polling" OR (
-                  "initiative_row"."satisfied_supporter_count" > 0 AND
+                  "initiative_row"."satisfied_supporter_count" > 
+                  "policy_row"."initiative_quorum" AND
                   "initiative_row"."satisfied_supporter_count" *
                   "policy_row"."initiative_quorum_den" >=
                   "issue_row"."population" * "policy_row"."initiative_quorum_num"
@@ -4971,19 +6080,24 @@ CREATE FUNCTION "check_everything"()
   RETURNS VOID
   LANGUAGE 'plpgsql' VOLATILE AS $$
     DECLARE
+      "area_id_v"     "area"."id"%TYPE;
       "snapshot_id_v" "snapshot"."id"%TYPE;
       "issue_id_v"    "issue"."id"%TYPE;
       "persist_v"     "check_issue_persistence";
     BEGIN
       RAISE WARNING 'Function "check_everything" should only be used for development and debugging purposes';
       DELETE FROM "expired_session";
+      DELETE FROM "expired_token";
+      DELETE FROM "expired_snapshot";
       PERFORM "check_activity"();
       PERFORM "calculate_member_counts"();
-      SELECT "take_snapshot"(NULL) INTO "snapshot_id_v";
-      PERFORM "finish_snapshot"("issue_id") FROM "snapshot_issue"
-        WHERE "snapshot_id" = "snapshot_id_v";
-      LOOP
-        EXIT WHEN "issue_admission"() = FALSE;
+      FOR "area_id_v" IN SELECT "id" FROM "area_with_unaccepted_issues" LOOP
+        SELECT "take_snapshot"(NULL, "area_id_v") INTO "snapshot_id_v";
+        PERFORM "finish_snapshot"("issue_id") FROM "snapshot_issue"
+          WHERE "snapshot_id" = "snapshot_id_v";
+        LOOP
+          EXIT WHEN "issue_admission"("area_id_v") = FALSE;
+        END LOOP;
       END LOOP;
       FOR "issue_id_v" IN SELECT "id" FROM "open_issue" LOOP
         "persist_v" := NULL;
@@ -4996,7 +6110,7 @@ CREATE FUNCTION "check_everything"()
     END;
   $$;
 
-COMMENT ON FUNCTION "check_everything"() IS 'Amongst other regular tasks, this function performs "check_issue" for every open issue. Use this function only for development and debugging purposes, as you may run into locking and/or serialization problems in productive environments.';
+COMMENT ON FUNCTION "check_everything"() IS 'Amongst other regular tasks, this function performs "check_issue" for every open issue. Use this function only for development and debugging purposes, as you may run into locking and/or serialization problems in productive environments. For production, use lf_update binary instead';
 
 
 
@@ -5023,10 +6137,6 @@ CREATE FUNCTION "clean_issue"("issue_id_p" "issue"."id"%TYPE)
         DELETE FROM "delegating_interest_snapshot"
           WHERE "issue_id" = "issue_id_p";
         DELETE FROM "direct_interest_snapshot"
-          WHERE "issue_id" = "issue_id_p";
-        DELETE FROM "delegating_population_snapshot"
-          WHERE "issue_id" = "issue_id_p";
-        DELETE FROM "direct_population_snapshot"
           WHERE "issue_id" = "issue_id_p";
         DELETE FROM "non_voter"
           WHERE "issue_id" = "issue_id_p";
@@ -5076,20 +6186,7 @@ CREATE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
         "login_recovery_expiry"        = NULL,
         "password_reset_secret"        = NULL,
         "password_reset_secret_expiry" = NULL,
-        "organizational_unit"          = NULL,
-        "internal_posts"               = NULL,
-        "realname"                     = NULL,
-        "birthday"                     = NULL,
-        "address"                      = NULL,
-        "email"                        = NULL,
-        "xmpp_address"                 = NULL,
-        "website"                      = NULL,
-        "phone"                        = NULL,
-        "mobile_phone"                 = NULL,
-        "profession"                   = NULL,
-        "external_memberships"         = NULL,
-        "external_posts"               = NULL,
-        "statement"                    = NULL
+        "location"                     = NULL
         WHERE "id" = "member_id_p";
       -- "text_search_data" is updated by triggers
       DELETE FROM "setting"            WHERE "member_id" = "member_id_p";
@@ -5104,7 +6201,6 @@ CREATE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
       DELETE FROM "ignored_initiative" WHERE "member_id" = "member_id_p";
       DELETE FROM "initiative_setting" WHERE "member_id" = "member_id_p";
       DELETE FROM "suggestion_setting" WHERE "member_id" = "member_id_p";
-      DELETE FROM "membership"         WHERE "member_id" = "member_id_p";
       DELETE FROM "delegation"         WHERE "truster_id" = "member_id_p";
       DELETE FROM "non_voter"          WHERE "member_id" = "member_id_p";
       DELETE FROM "direct_voter" USING "issue"
@@ -5149,21 +6245,7 @@ CREATE FUNCTION "delete_private_data"()
         "login_recovery_expiry"        = NULL,
         "password_reset_secret"        = NULL,
         "password_reset_secret_expiry" = NULL,
-        "organizational_unit"          = NULL,
-        "internal_posts"               = NULL,
-        "realname"                     = NULL,
-        "birthday"                     = NULL,
-        "address"                      = NULL,
-        "email"                        = NULL,
-        "xmpp_address"                 = NULL,
-        "website"                      = NULL,
-        "phone"                        = NULL,
-        "mobile_phone"                 = NULL,
-        "profession"                   = NULL,
-        "external_memberships"         = NULL,
-        "external_posts"               = NULL,
-        "formatting_engine"            = NULL,
-        "statement"                    = NULL;
+        "location"                     = NULL;
       -- "text_search_data" is updated by triggers
       DELETE FROM "setting";
       DELETE FROM "setting_map";

@@ -42,16 +42,16 @@ INSERT INTO "policy" (
     "discussion_time",
     "verification_time",
     "voting_time",
-    "issue_quorum",
-    "initiative_quorum_num", "initiative_quorum_den",
+    "issue_quorum", "issue_quorum_num", "issue_quorum_den",
+    "initiative_quorum", "initiative_quorum_num", "initiative_quorum_den",
     "direct_majority_num", "direct_majority_den", "direct_majority_strict",
     "no_reverse_beat_path", "no_multistage_majority"
   ) VALUES (
     1,
     'Default policy',
     '0', '1 hour', '1 hour', '1 hour', '1 hour',
-    3,
-    30, 100,
+    1, 10, 100,
+    1, 30, 100,
     1, 2, TRUE,
     TRUE, FALSE );
 
@@ -69,11 +69,6 @@ CREATE FUNCTION "time_warp"() RETURNS VOID
   $$;
 
 INSERT INTO "unit" ("name") VALUES ('Main');
-
-INSERT INTO "admission_rule" ("unit_id", "name") VALUES (1, 'General admission rule');
-
-INSERT INTO "admission_rule_condition" ("admission_rule_id", "unit_id", "holdoff_time")
-  VALUES (1, 1, '0 seconds');
 
 INSERT INTO "privilege" ("unit_id", "member_id", "voting_right")
   SELECT 1 AS "unit_id", "id" AS "member_id", TRUE AS "voting_right"
@@ -409,6 +404,9 @@ INSERT INTO "policy" (
         "verification_time",
         "voting_time",
         "issue_quorum",
+        "issue_quorum_num",
+        "issue_quorum_den",
+        "initiative_quorum",
         "initiative_quorum_num",
         "initiative_quorum_den"
     ) VALUES (
@@ -421,8 +419,8 @@ INSERT INTO "policy" (
         '1 second',
         '1 second',
         '1 second',
-        1,
-        0, 100
+        1, 0, 100,
+        1, 0, 100
     ), (
         1,
         TRUE,
@@ -433,8 +431,8 @@ INSERT INTO "policy" (
         '2 days',
         '1 second',
         '1 second',
-        1,
-        0, 100
+        1, 0, 100,
+        1, 0, 100
     ), (
         1,
         TRUE,
@@ -445,8 +443,8 @@ INSERT INTO "policy" (
         '5 minutes',
         '2 days',
         '1 second',
-        1,
-        0, 100
+        1, 0, 100,
+        1, 0, 100
     ), (
         1,
         TRUE,
@@ -457,8 +455,8 @@ INSERT INTO "policy" (
         '5 minutes',
         '1 second',
         '2 days',
-        1,
-        0, 100
+        1, 0, 100,
+        1, 0, 100
     );
 
 END;
