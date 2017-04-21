@@ -1682,12 +1682,12 @@ COMMENT ON COLUMN "event"."member_id"  IS 'Member who caused the event, if appli
 COMMENT ON COLUMN "event"."state"      IS 'If issue_id is set: state of affected issue; If state changed: new state';
 
 
-CREATE TABLE "notification_event_sent" (
+CREATE TABLE "event_processed" (
         "event_id"              INT8            NOT NULL );
-CREATE UNIQUE INDEX "notification_event_sent_singleton_idx" ON "notification_event_sent" ((1));
+CREATE UNIQUE INDEX "event_processed_singleton_idx" ON "event_processed" ((1));
 
-COMMENT ON TABLE "notification_event_sent" IS 'This table stores one row with the last event_id, for which notifications have been sent out';
-COMMENT ON INDEX "notification_event_sent_singleton_idx" IS 'This index ensures that "notification_event_sent" only contains one row maximum.';
+COMMENT ON TABLE "event_processed" IS 'This table stores one row with the last event_id, for which event handlers have been executed (e.g. notifications having been sent out)';
+COMMENT ON INDEX "event_processed_singleton_idx" IS 'This index ensures that "event_processed" only contains one row maximum.';
 
 
 CREATE TABLE "notification_initiative_sent" (

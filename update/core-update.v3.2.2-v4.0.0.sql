@@ -907,6 +907,13 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_contact" CHECK (
             "old_text_value"  ISNULL ));
 
 
+ALTER TABLE "notification_event_sent" RENAME TO "event_processed";
+ALTER INDEX "notification_event_sent_singleton_idx" RENAME TO "event_processed_singleton_idx";
+
+COMMENT ON TABLE "event_processed" IS 'This table stores one row with the last event_id, for which event handlers have been executed (e.g. notifications having been sent out)';
+COMMENT ON INDEX "event_processed_singleton_idx" IS 'This index ensures that "event_processed" only contains one row maximum.';
+
+
 CREATE OR REPLACE FUNCTION "write_event_issue_state_changed_trigger"()
   RETURNS TRIGGER
   LANGUAGE 'plpgsql' VOLATILE AS $$
