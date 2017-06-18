@@ -2252,12 +2252,12 @@ CREATE FUNCTION "write_event_support_trigger"()
           INSERT INTO "event" (
               "event", "member_id",
               "unit_id", "area_id", "issue_id", "state",
-              "initiative_id", "draft_id", "boolean_value"
+              "initiative_id", "boolean_value"
             ) VALUES (
               'support', OLD."member_id",
               "area_row"."unit_id", "issue_row"."area_id",
               "issue_row"."id", "issue_row"."state",
-              OLD."initiative_id", OLD."draft_id", FALSE
+              OLD."initiative_id", FALSE
             );
         END IF;
       END IF;
