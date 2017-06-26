@@ -1230,7 +1230,7 @@ CREATE FUNCTION "write_event_member_trigger"()
         END IF;
         IF
           OLD."activated" NOTNULL AND
-          NEW."last_login"      ISNULL AND
+          (OLD."login" NOTNULL OR OLD."authority_login" NOTNULL) AND
           NEW."login"           ISNULL AND
           NEW."authority_login" ISNULL AND
           NEW."locked"          = TRUE
