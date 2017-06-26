@@ -944,7 +944,21 @@ COMMENT ON INDEX "event_processed_singleton_idx" IS 'This index ensures that "ev
 CREATE FUNCTION "write_event_unit_trigger"()
   RETURNS TRIGGER
   LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "event_v" "event_type";
     BEGIN
+      IF TG_OP = 'UPDATE' THEN
+        IF OLD."active" = FALSE AND NEW."active" = FALSE THEN
+          RETURN NULL;
+        ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
+          "event_v" := 'unit_removed';
+        ELSE
+          "event_v" := 'unit_updated';
+        END IF;
+      ELSE
+        "event_v" := 'unit_created';
+      END IF;
+      INSERT INTO "event" ("event", "unit_id") VALUES ("event_v", NEW."id");
       RETURN NULL;
     END;
   $$;
@@ -959,7 +973,21 @@ COMMENT ON TRIGGER "write_event_unit" ON "unit"  IS 'Create entry in "event" tab
 CREATE FUNCTION "write_event_area_trigger"()
   RETURNS TRIGGER
   LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "event_v" "event_type";
     BEGIN
+      IF TG_OP = 'UPDATE' THEN
+        IF OLD."active" = FALSE AND NEW."active" = FALSE THEN
+          RETURN NULL;
+        ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
+          "event_v" := 'area_removed';
+        ELSE
+          "event_v" := 'area_updated';
+        END IF;
+      ELSE
+        "event_v" := 'area_created';
+      END IF;
+      INSERT INTO "event" ("event", "area_id") VALUES ("event_v", NEW."id");
       RETURN NULL;
     END;
   $$;
@@ -974,7 +1002,21 @@ COMMENT ON TRIGGER "write_event_area" ON "area"  IS 'Create entry in "event" tab
 CREATE FUNCTION "write_event_policy_trigger"()
   RETURNS TRIGGER
   LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "event_v" "event_type";
     BEGIN
+      IF TG_OP = 'UPDATE' THEN
+        IF OLD."active" = FALSE AND NEW."active" = FALSE THEN
+          RETURN NULL;
+        ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
+          "event_v" := 'policy_removed';
+        ELSE
+          "event_v" := 'policy_updated';
+        END IF;
+      ELSE
+        "event_v" := 'policy_created';
+      END IF;
+      INSERT INTO "event" ("event", "policy_id") VALUES ("event_v", NEW."id");
       RETURN NULL;
     END;
   $$;
