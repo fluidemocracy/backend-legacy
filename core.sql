@@ -1782,6 +1782,51 @@ COMMENT ON FUNCTION "write_member_history_trigger"()  IS 'Implementation of trig
 COMMENT ON TRIGGER "write_member_history" ON "member" IS 'When changing certain fields of a member, create a history entry in "member_history" table';
 
 
+CREATE FUNCTION "write_event_unit_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_unit" AFTER INSERT OR UPDATE ON "unit"
+  FOR EACH ROW EXECUTE PROCEDURE "write_event_unit_trigger"();
+
+COMMENT ON FUNCTION "write_event_unit_trigger"() IS 'Implementation of trigger "write_event_unit" on table "unit"';
+COMMENT ON TRIGGER "write_event_unit" ON "unit"  IS 'Create entry in "event" table on new or changed/disabled units';
+
+
+CREATE FUNCTION "write_event_area_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_area" AFTER INSERT OR UPDATE ON "area"
+  FOR EACH ROW EXECUTE PROCEDURE "write_event_area_trigger"();
+
+COMMENT ON FUNCTION "write_event_area_trigger"() IS 'Implementation of trigger "write_event_area" on table "area"';
+COMMENT ON TRIGGER "write_event_area" ON "area"  IS 'Create entry in "event" table on new or changed/disabled areas';
+
+
+CREATE FUNCTION "write_event_policy_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_policy" AFTER INSERT OR UPDATE ON "policy"
+  FOR EACH ROW EXECUTE PROCEDURE "write_event_policy_trigger"();
+
+COMMENT ON FUNCTION "write_event_policy_trigger"()  IS 'Implementation of trigger "write_event_policy" on table "policy"';
+COMMENT ON TRIGGER "write_event_policy" ON "policy" IS 'Create entry in "event" table on new or changed/disabled policies';
+
+
 CREATE FUNCTION "write_event_issue_state_changed_trigger"()
   RETURNS TRIGGER
   LANGUAGE 'plpgsql' VOLATILE AS $$
