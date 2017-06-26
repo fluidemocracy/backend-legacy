@@ -1,3 +1,12 @@
+ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'unit_created';
+ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'unit_updated';
+ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'unit_removed';
+ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'subject_area_created';
+ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'subject_area_updated';
+ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'subject_area_removed';
+ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'policy_created';
+ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'policy_updated';
+ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'policy_removed';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'suggestion_removed';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'member_activated';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'member_removed';
@@ -472,6 +481,8 @@ COMMENT ON TABLE "snapshot_population" IS 'Members with voting right relevant fo
 
 ALTER TABLE "issue" ADD UNIQUE ("area_id", "id");
 DROP INDEX "issue_area_id_idx";
+ALTER TABLE "issue" ADD UNIQUE ("policy_id", "id");
+DROP INDEX "issue_policy_id_idx";
 
 ALTER TABLE "issue" RENAME COLUMN "snapshot" TO "calculated";
 
@@ -653,6 +664,7 @@ ALTER TABLE "event" ADD COLUMN "other_member_id" INT4    REFERENCES "member" ("i
 ALTER TABLE "event" ADD COLUMN "scope"           "delegation_scope";
 ALTER TABLE "event" ADD COLUMN "unit_id"         INT4    REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "event" ADD COLUMN "area_id"         INT4;
+ALTER TABLE "event" ADD COLUMN "policy_id"       INT4    REFERENCES "policy" ("id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "event" ADD COLUMN "boolean_value"   BOOLEAN;
 ALTER TABLE "event" ADD COLUMN "numeric_value"   INT4;
 ALTER TABLE "event" ADD COLUMN "text_value"      TEXT;
@@ -660,6 +672,7 @@ ALTER TABLE "event" ADD COLUMN "old_text_value"  TEXT;
 
 ALTER TABLE "event" ADD FOREIGN KEY ("unit_id", "area_id") REFERENCES "area" ("unit_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 ALTER TABLE "event" ADD FOREIGN KEY ("area_id", "issue_id") REFERENCES "issue" ("area_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "event" ADD FOREIGN KEY ("policy_id", "issue_id") REFERENCES "issue" ("policy_id", "id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 ALTER TABLE "event" DROP CONSTRAINT "event_initiative_id_fkey1";
 ALTER TABLE "event" DROP CONSTRAINT "null_constr_for_issue_state_changed";
@@ -677,6 +690,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_issue_state_changed" CHECK (
             "scope"           ISNULL  AND
             "unit_id"         NOTNULL AND
             "area_id"         NOTNULL AND
+            "policy_id"       NOTNULL AND
             "issue_id"        NOTNULL AND
             "state"           NOTNULL AND
             "initiative_id"   ISNULL  AND
@@ -698,6 +712,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_initiative_creation_or_revocation
             "scope"           ISNULL  AND
             "unit_id"         NOTNULL AND
             "area_id"         NOTNULL AND
+            "policy_id"       NOTNULL AND
             "issue_id"        NOTNULL AND
             "state"           NOTNULL AND
             "initiative_id"   NOTNULL AND
@@ -714,6 +729,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_suggestion_creation" CHECK (
             "scope"           ISNULL  AND
             "unit_id"         NOTNULL AND
             "area_id"         NOTNULL AND
+            "policy_id"       NOTNULL AND
             "issue_id"        NOTNULL AND
             "state"           NOTNULL AND
             "initiative_id"   NOTNULL AND
@@ -730,6 +746,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_suggestion_removal" CHECK (
             "scope"           ISNULL  AND
             "unit_id"         NOTNULL AND
             "area_id"         NOTNULL AND
+            "policy_id"       NOTNULL AND
             "issue_id"        NOTNULL AND
             "state"           NOTNULL AND
             "initiative_id"   NOTNULL AND
@@ -751,6 +768,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_value_less_member_event" CHECK (
             "scope"           ISNULL  AND
             "unit_id"         ISNULL  AND
             "area_id"         ISNULL  AND
+            "policy_id"       ISNULL  AND
             "issue_id"        ISNULL  AND
             "state"           ISNULL  AND
             "initiative_id"   ISNULL  AND
@@ -767,6 +785,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_member_active" CHECK (
             "scope"           ISNULL  AND
             "unit_id"         ISNULL  AND
             "area_id"         ISNULL  AND
+            "policy_id"       ISNULL  AND
             "issue_id"        ISNULL  AND
             "state"           ISNULL  AND
             "initiative_id"   ISNULL  AND
@@ -783,6 +802,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_member_name_updated" CHECK (
             "scope"           ISNULL  AND
             "unit_id"         ISNULL  AND
             "area_id"         ISNULL  AND
+            "policy_id"       ISNULL  AND
             "issue_id"        ISNULL  AND
             "state"           ISNULL  AND
             "initiative_id"   ISNULL  AND
@@ -799,6 +819,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_interest" CHECK (
             "scope"           ISNULL  AND
             "unit_id"         NOTNULL AND
             "area_id"         NOTNULL AND
+            "policy_id"       NOTNULL AND
             "issue_id"        NOTNULL AND
             "state"           NOTNULL AND
             "initiative_id"   ISNULL  AND
@@ -815,6 +836,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_initiator" CHECK (
             "scope"           ISNULL  AND
             "unit_id"         NOTNULL AND
             "area_id"         NOTNULL AND
+            "policy_id"       NOTNULL AND
             "issue_id"        NOTNULL AND
             "state"           NOTNULL AND
             "initiative_id"   NOTNULL AND
@@ -831,6 +853,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_support" CHECK (
             "scope"           ISNULL  AND
             "unit_id"         NOTNULL AND
             "area_id"         NOTNULL AND
+            "policy_id"       NOTNULL AND
             "issue_id"        NOTNULL AND
             "state"           NOTNULL AND
             "initiative_id"   NOTNULL AND
@@ -847,6 +870,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_support_updated" CHECK (
             "scope"           ISNULL  AND
             "unit_id"         NOTNULL AND
             "area_id"         NOTNULL AND
+            "policy_id"       NOTNULL AND
             "issue_id"        NOTNULL AND
             "state"           NOTNULL AND
             "initiative_id"   NOTNULL AND
@@ -863,6 +887,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_suggestion_rated" CHECK (
             "scope"           ISNULL  AND
             "unit_id"         NOTNULL AND
             "area_id"         NOTNULL AND
+            "policy_id"       NOTNULL AND
             "issue_id"        NOTNULL AND
             "state"           NOTNULL AND
             "initiative_id"   NOTNULL AND
@@ -880,6 +905,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_delegation" CHECK (
             "scope"           NOTNULL AND
             "unit_id"         NOTNULL AND
             ("area_id"  NOTNULL) = ("scope" != 'unit'::"delegation_scope") AND
+            "policy_id"       ISNULL  AND
             ("issue_id" NOTNULL) = ("scope" = 'issue'::"delegation_scope") AND
             ("state"    NOTNULL) = ("scope" = 'issue'::"delegation_scope") AND
             "initiative_id"   ISNULL  AND
@@ -896,6 +922,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_contact" CHECK (
             "scope"           ISNULL  AND
             "unit_id"         ISNULL  AND
             "area_id"         ISNULL  AND
+            "policy_id"       ISNULL  AND
             "issue_id"        ISNULL  AND
             "state"           ISNULL  AND
             "initiative_id"   ISNULL  AND
@@ -925,10 +952,11 @@ CREATE OR REPLACE FUNCTION "write_event_issue_state_changed_trigger"()
           FOR SHARE;
         INSERT INTO "event" (
             "event",
-            "unit_id", "area_id", "issue_id", "state"
+            "unit_id", "area_id", "policy_id", "issue_id", "state"
           ) VALUES (
             'issue_state_changed',
-            "area_row"."unit_id", NEW."area_id", NEW."id", NEW."state"
+            "area_row"."unit_id", NEW."area_id", NEW."policy_id",
+            NEW."id", NEW."state"
           );
       END IF;
       RETURN NULL;
@@ -971,11 +999,11 @@ CREATE OR REPLACE FUNCTION "write_event_initiative_or_draft_created_trigger"()
       END IF;
       INSERT INTO "event" (
           "event", "member_id",
-          "unit_id", "area_id", "issue_id", "state",
+          "unit_id", "area_id", "policy_id", "issue_id", "state",
           "initiative_id", "draft_id"
         ) VALUES (
           "event_v", NEW."author_id",
-          "area_row"."unit_id", "issue_row"."area_id",
+          "area_row"."unit_id", "issue_row"."area_id", "issue_row"."policy_id",
           "initiative_row"."issue_id", "issue_row"."state",
           NEW."initiative_id", NEW."id"
         );
@@ -1001,11 +1029,12 @@ CREATE OR REPLACE FUNCTION "write_event_initiative_revoked_trigger"()
           WHERE "initiative_id" = NEW."id" FOR SHARE;
         INSERT INTO "event" (
             "event", "member_id",
-            "unit_id", "area_id", "issue_id", "state",
+            "unit_id", "area_id", "policy_id", "issue_id", "state",
             "initiative_id", "draft_id"
           ) VALUES (
             'initiative_revoked', NEW."revoked_by_member_id",
             "area_row"."unit_id", "issue_row"."area_id",
+            "issue_row"."policy_id",
             NEW."issue_id", "issue_row"."state",
             NEW."id", "draft_id_v"
           );
@@ -1031,11 +1060,11 @@ CREATE OR REPLACE FUNCTION "write_event_suggestion_created_trigger"()
         WHERE "id" = "issue_row"."area_id" FOR SHARE;
       INSERT INTO "event" (
           "event", "member_id",
-          "unit_id", "area_id", "issue_id", "state",
+          "unit_id", "area_id", "policy_id", "issue_id", "state",
           "initiative_id", "suggestion_id"
         ) VALUES (
           'suggestion_created', NEW."author_id",
-          "area_row"."unit_id", "issue_row"."area_id",
+          "area_row"."unit_id", "issue_row"."area_id", "issue_row"."policy_id",
           "initiative_row"."issue_id", "issue_row"."state",
           NEW."initiative_id", NEW."id"
         );
@@ -1061,11 +1090,12 @@ CREATE FUNCTION "write_event_suggestion_removed_trigger"()
           WHERE "id" = "issue_row"."area_id" FOR SHARE;
         INSERT INTO "event" (
             "event",
-            "unit_id", "area_id", "issue_id", "state",
+            "unit_id", "area_id", "policy_id", "issue_id", "state",
             "initiative_id", "suggestion_id"
           ) VALUES (
             'suggestion_removed',
             "area_row"."unit_id", "issue_row"."area_id",
+            "issue_row"."policy_id",
             "initiative_row"."issue_id", "issue_row"."state",
             OLD."initiative_id", OLD."id"
           );
@@ -1229,11 +1259,12 @@ CREATE FUNCTION "write_event_interest_trigger"()
         IF "issue_row"."id" NOTNULL THEN
           INSERT INTO "event" (
               "event", "member_id",
-              "unit_id", "area_id", "issue_id", "state",
+              "unit_id", "area_id", "policy_id", "issue_id", "state",
               "boolean_value"
             ) VALUES (
               'interest', OLD."member_id",
               "area_row"."unit_id", "issue_row"."area_id",
+              "issue_row"."policy_id",
               OLD."issue_id", "issue_row"."state",
               FALSE
             );
@@ -1246,11 +1277,12 @@ CREATE FUNCTION "write_event_interest_trigger"()
           WHERE "id" = "issue_row"."area_id" FOR SHARE;
         INSERT INTO "event" (
             "event", "member_id",
-            "unit_id", "area_id", "issue_id", "state",
+            "unit_id", "area_id", "policy_id", "issue_id", "state",
             "boolean_value"
           ) VALUES (
             'interest', NEW."member_id",
             "area_row"."unit_id", "issue_row"."area_id",
+            "issue_row"."policy_id",
             NEW."issue_id", "issue_row"."state",
             TRUE
           );
@@ -1295,11 +1327,12 @@ CREATE FUNCTION "write_event_initiator_trigger"()
               WHERE "id" = "issue_row"."area_id" FOR SHARE;
             INSERT INTO "event" (
                 "event", "member_id",
-                "unit_id", "area_id", "issue_id", "state",
+                "unit_id", "area_id", "policy_id", "issue_id", "state",
                 "initiative_id", "boolean_value"
               ) VALUES (
                 'initiator', OLD."member_id",
                 "area_row"."unit_id", "issue_row"."area_id",
+                "issue_row"."policy_id",
                 "issue_row"."id", "issue_row"."state",
                 OLD."initiative_id", FALSE
               );
@@ -1316,11 +1349,12 @@ CREATE FUNCTION "write_event_initiator_trigger"()
             WHERE "id" = "issue_row"."area_id" FOR SHARE;
           INSERT INTO "event" (
               "event", "member_id",
-              "unit_id", "area_id", "issue_id", "state",
+              "unit_id", "area_id", "policy_id", "issue_id", "state",
               "initiative_id", "boolean_value"
             ) VALUES (
               'initiator', NEW."member_id",
               "area_row"."unit_id", "issue_row"."area_id",
+              "issue_row"."policy_id",
               "issue_row"."id", "issue_row"."state",
               NEW."initiative_id", TRUE
             );
@@ -1357,11 +1391,12 @@ CREATE FUNCTION "write_event_support_trigger"()
               WHERE "id" = "issue_row"."area_id" FOR SHARE;
             INSERT INTO "event" (
                 "event", "member_id",
-                "unit_id", "area_id", "issue_id", "state",
+                "unit_id", "area_id", "policy_id", "issue_id", "state",
                 "initiative_id", "draft_id"
               ) VALUES (
                 'support_updated', NEW."member_id",
                 "area_row"."unit_id", "issue_row"."area_id",
+                "issue_row"."policy_id",
                 "issue_row"."id", "issue_row"."state",
                 NEW."initiative_id", NEW."draft_id"
               );
@@ -1380,11 +1415,12 @@ CREATE FUNCTION "write_event_support_trigger"()
             WHERE "id" = "issue_row"."area_id" FOR SHARE;
           INSERT INTO "event" (
               "event", "member_id",
-              "unit_id", "area_id", "issue_id", "state",
+              "unit_id", "area_id", "policy_id", "issue_id", "state",
               "initiative_id", "boolean_value"
             ) VALUES (
               'support', OLD."member_id",
               "area_row"."unit_id", "issue_row"."area_id",
+              "issue_row"."policy_id",
               "issue_row"."id", "issue_row"."state",
               OLD."initiative_id", FALSE
             );
@@ -1397,11 +1433,12 @@ CREATE FUNCTION "write_event_support_trigger"()
           WHERE "id" = "issue_row"."area_id" FOR SHARE;
         INSERT INTO "event" (
             "event", "member_id",
-            "unit_id", "area_id", "issue_id", "state",
+            "unit_id", "area_id", "policy_id", "issue_id", "state",
             "initiative_id", "draft_id", "boolean_value"
           ) VALUES (
             'support', NEW."member_id",
             "area_row"."unit_id", "issue_row"."area_id",
+            "issue_row"."policy_id",
             "issue_row"."id", "issue_row"."state",
             NEW."initiative_id", NEW."draft_id", TRUE
           );
@@ -1454,12 +1491,13 @@ CREATE FUNCTION "write_event_suggestion_rated_trigger"()
             WHERE "id" = "issue_row"."area_id" FOR SHARE;
           INSERT INTO "event" (
               "event", "member_id",
-              "unit_id", "area_id", "issue_id", "state",
+              "unit_id", "area_id", "policy_id", "issue_id", "state",
               "initiative_id", "suggestion_id",
               "boolean_value", "numeric_value"
             ) VALUES (
               'suggestion_rated', OLD."member_id",
               "area_row"."unit_id", "issue_row"."area_id",
+              "issue_row"."policy_id",
               "initiative_row"."issue_id", "issue_row"."state",
               OLD."initiative_id", OLD."suggestion_id",
               NULL, 0
@@ -1475,12 +1513,13 @@ CREATE FUNCTION "write_event_suggestion_rated_trigger"()
           WHERE "id" = "issue_row"."area_id" FOR SHARE;
         INSERT INTO "event" (
             "event", "member_id",
-            "unit_id", "area_id", "issue_id", "state",
+            "unit_id", "area_id", "policy_id", "issue_id", "state",
             "initiative_id", "suggestion_id",
             "boolean_value", "numeric_value"
           ) VALUES (
             'suggestion_rated', NEW."member_id",
             "area_row"."unit_id", "issue_row"."area_id",
+            "issue_row"."policy_id",
             "initiative_row"."issue_id", "issue_row"."state",
             NEW."initiative_id", NEW."suggestion_id",
             NEW."fulfilled", NEW."degree"
