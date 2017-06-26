@@ -1,9 +1,9 @@
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'unit_created';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'unit_updated';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'unit_removed';
-ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'subject_area_created';
-ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'subject_area_updated';
-ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'subject_area_removed';
+ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'area_created';
+ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'area_updated';
+ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'area_removed';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'policy_created';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'policy_updated';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'policy_removed';
