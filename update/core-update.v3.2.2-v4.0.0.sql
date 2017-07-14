@@ -678,6 +678,14 @@ ALTER TABLE "non_voter" ADD PRIMARY KEY ("member_id", "issue_id");
 CREATE INDEX "non_voter_issue_id_idx" ON "non_voter" ("issue_id");
 
 
+INSERT INTO "member_useterms" ("member_id", "accepted", "contract_identifier")
+  SELECT
+    "member_id",
+    regexp_replace("value", '^accepted at ', '')::TIMESTAMPTZ AS "accepted",
+    regexp_replace("key", '^use_terms_checkbox_', '') AS "contract_identifier"
+  FROM "setting" WHERE "key" LIKE 'use_terms_checkbox_%';
+
+
 DROP TABLE "setting";
 DROP TABLE "setting_map";
 DROP TABLE "member_relation_setting";
