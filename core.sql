@@ -203,11 +203,29 @@ COMMENT ON COLUMN "member_history"."id"    IS 'Primary key, which can be used to
 COMMENT ON COLUMN "member_history"."until" IS 'Timestamp until the data was valid';
 
 
+CREATE TABLE "member_settings" (
+        "member_id"             INT4            PRIMARY KEY REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "settings"              JSONB           NOT NULL CHECK (jsonb_typeof("settings") = 'object') );
+
+COMMENT ON TABLE "member_settings" IS 'Stores a JSON document for each member containing optional (additional) settings for the respective member';
+
+
+CREATE TABLE "member_useterms" (
+        "member_id"             INT4            PRIMARY KEY REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "accepted"              TIMESTAMPTZ     NOT NULL,
+        "contract_identifier"   TEXT            NOT NULL );
+
+COMMENT ON TABLE "member_useterms" IS 'Keeps record of accepted terms of use; may contain multiple rows per member';
+
+COMMENT ON COLUMN "member_useterms"."accepted"            IS 'Point in time when user accepted the terms of use';
+COMMENT ON COLUMN "member_useterms"."contract_identifier" IS 'String identifier to denote the accepted terms of use, including their version or revision';
+
+
 CREATE TABLE "member_profile" (
         "member_id"             INT4            PRIMARY KEY REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "formatting_engine"     TEXT,
         "statement"             TEXT,
-        "profile"               JSONB,
+        "profile"               JSONB           NOT NULL DEFAULT '{}' CHECK (jsonb_typeof("profile") = 'object'),
         "profile_text_data"     TEXT,
         "text_search_data"      TSVECTOR );
 CREATE INDEX "member_profile_text_search_data_idx" ON "member_profile" USING gin ("text_search_data");
@@ -6227,6 +6245,7 @@ CREATE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
         "location"                     = NULL
         WHERE "id" = "member_id_p";
       -- "text_search_data" is updated by triggers
+      DELETE FROM "member_settings"    WHERE "member_id" = "member_id_p";
       DELETE FROM "member_profile"     WHERE "member_id" = "member_id_p";
       DELETE FROM "rendered_member_statement" WHERE "member_id" = "member_id_p";
       DELETE FROM "member_image"       WHERE "member_id" = "member_id_p";
@@ -6287,6 +6306,8 @@ CREATE FUNCTION "delete_private_data"()
         "password_reset_secret_expiry" = NULL,
         "location"                     = NULL;
       -- "text_search_data" is updated by triggers
+      DELETE FROM "member_settings";
+      DELETE FROM "member_useterms";
       DELETE FROM "member_profile";
       DELETE FROM "rendered_member_statement";
       DELETE FROM "member_image";
