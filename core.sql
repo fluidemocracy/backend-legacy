@@ -6220,16 +6220,23 @@ CREATE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
         "notification_sample_size"     = 0,
         "notification_dow"             = NULL,
         "notification_hour"            = NULL,
+        "notification_sent"            = NULL,
         "login_recovery_expiry"        = NULL,
         "password_reset_secret"        = NULL,
         "password_reset_secret_expiry" = NULL,
         "location"                     = NULL
         WHERE "id" = "member_id_p";
       -- "text_search_data" is updated by triggers
+      DELETE FROM "member_profile"     WHERE "member_id" = "member_id_p";
+      DELETE FROM "rendered_member_statement" WHERE "member_id" = "member_id_p";
       DELETE FROM "member_image"       WHERE "member_id" = "member_id_p";
       DELETE FROM "contact"            WHERE "member_id" = "member_id_p";
       DELETE FROM "ignored_member"     WHERE "member_id" = "member_id_p";
       DELETE FROM "session"            WHERE "member_id" = "member_id_p";
+      DELETE FROM "member_application" WHERE "member_id" = "member_id_p";
+      DELETE FROM "token"              WHERE "member_id" = "member_id_p";
+      DELETE FROM "subscription"       WHERE "member_id" = "member_id_p";
+      DELETE FROM "ignored_area"       WHERE "member_id" = "member_id_p";
       DELETE FROM "ignored_initiative" WHERE "member_id" = "member_id_p";
       DELETE FROM "delegation"         WHERE "truster_id" = "member_id_p";
       DELETE FROM "non_voter"          WHERE "member_id" = "member_id_p";
@@ -6237,6 +6244,7 @@ CREATE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
         WHERE "direct_voter"."issue_id" = "issue"."id"
         AND "issue"."closed" ISNULL
         AND "member_id" = "member_id_p";
+      DELETE FROM "notification_initiative_sent" WHERE "member_id" = "member_id_p";
       RETURN;
     END;
   $$;
@@ -6249,6 +6257,7 @@ CREATE FUNCTION "delete_private_data"()
   LANGUAGE 'plpgsql' VOLATILE AS $$
     BEGIN
       DELETE FROM "temporary_transaction_data";
+      DELETE FROM "temporary_suggestion_counts";
       DELETE FROM "member" WHERE "activated" ISNULL;
       UPDATE "member" SET
         "invite_code"                  = NULL,
@@ -6272,20 +6281,33 @@ CREATE FUNCTION "delete_private_data"()
         "notification_sample_size"     = 0,
         "notification_dow"             = NULL,
         "notification_hour"            = NULL,
+        "notification_sent"            = NULL,
         "login_recovery_expiry"        = NULL,
         "password_reset_secret"        = NULL,
         "password_reset_secret_expiry" = NULL,
         "location"                     = NULL;
       -- "text_search_data" is updated by triggers
+      DELETE FROM "member_profile";
+      DELETE FROM "rendered_member_statement";
       DELETE FROM "member_image";
       DELETE FROM "contact";
       DELETE FROM "ignored_member";
       DELETE FROM "session";
+      DELETE FROM "system_application";
+      DELETE FROM "system_application_redirect_uri";
+      DELETE FROM "dynamic_application_scope";
+      DELETE FROM "member_application";
+      DELETE FROM "token";
+      DELETE FROM "subscription";
+      DELETE FROM "ignored_area";
       DELETE FROM "ignored_initiative";
       DELETE FROM "non_voter";
       DELETE FROM "direct_voter" USING "issue"
         WHERE "direct_voter"."issue_id" = "issue"."id"
         AND "issue"."closed" ISNULL;
+      DELETE FROM "event_processed";
+      DELETE FROM "notification_initiative_sent";
+      DELETE FROM "newsletter";
       RETURN;
     END;
   $$;
