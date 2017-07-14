@@ -660,6 +660,15 @@ ALTER TABLE "non_voter" ADD PRIMARY KEY ("member_id", "issue_id");
 CREATE INDEX "non_voter_issue_id_idx" ON "non_voter" ("issue_id");
 
 
+DROP TABLE "setting";
+DROP TABLE "setting_map";
+DROP TABLE "member_relation_setting";
+DROP TABLE "unit_setting";
+DROP TABLE "area_setting";
+DROP TABLE "initiative_setting";
+DROP TABLE "suggestion_setting";
+
+
 ALTER TABLE "event" ADD COLUMN "other_member_id" INT4    REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "event" ADD COLUMN "scope"           "delegation_scope";
 ALTER TABLE "event" ADD COLUMN "unit_id"         INT4    REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -3233,18 +3242,11 @@ CREATE OR REPLACE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
         "location"                     = NULL
         WHERE "id" = "member_id_p";
       -- "text_search_data" is updated by triggers
-      DELETE FROM "setting"            WHERE "member_id" = "member_id_p";
-      DELETE FROM "setting_map"        WHERE "member_id" = "member_id_p";
-      DELETE FROM "member_relation_setting" WHERE "member_id" = "member_id_p";
       DELETE FROM "member_image"       WHERE "member_id" = "member_id_p";
       DELETE FROM "contact"            WHERE "member_id" = "member_id_p";
       DELETE FROM "ignored_member"     WHERE "member_id" = "member_id_p";
       DELETE FROM "session"            WHERE "member_id" = "member_id_p";
-      DELETE FROM "area_setting"       WHERE "member_id" = "member_id_p";
-      DELETE FROM "issue_setting"      WHERE "member_id" = "member_id_p";
       DELETE FROM "ignored_initiative" WHERE "member_id" = "member_id_p";
-      DELETE FROM "initiative_setting" WHERE "member_id" = "member_id_p";
-      DELETE FROM "suggestion_setting" WHERE "member_id" = "member_id_p";
       DELETE FROM "delegation"         WHERE "truster_id" = "member_id_p";
       DELETE FROM "non_voter"          WHERE "member_id" = "member_id_p";
       DELETE FROM "direct_voter" USING "issue"
@@ -3289,18 +3291,11 @@ CREATE OR REPLACE FUNCTION "delete_private_data"()
         "password_reset_secret_expiry" = NULL,
         "location"                     = NULL;
       -- "text_search_data" is updated by triggers
-      DELETE FROM "setting";
-      DELETE FROM "setting_map";
-      DELETE FROM "member_relation_setting";
       DELETE FROM "member_image";
       DELETE FROM "contact";
       DELETE FROM "ignored_member";
       DELETE FROM "session";
-      DELETE FROM "area_setting";
-      DELETE FROM "issue_setting";
       DELETE FROM "ignored_initiative";
-      DELETE FROM "initiative_setting";
-      DELETE FROM "suggestion_setting";
       DELETE FROM "non_voter";
       DELETE FROM "direct_voter" USING "issue"
         WHERE "direct_voter"."issue_id" = "issue"."id"

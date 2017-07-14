@@ -232,43 +232,6 @@ CREATE TABLE "rendered_member_statement" (
 COMMENT ON TABLE "rendered_member_statement" IS 'This table may be used by frontends to cache "rendered" member statements (e.g. HTML output generated from wiki text)';
 
 
-CREATE TABLE "setting" (
-        PRIMARY KEY ("member_id", "key"),
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "key"                   TEXT            NOT NULL,
-        "value"                 TEXT            NOT NULL );
-CREATE INDEX "setting_key_idx" ON "setting" ("key");
-
-COMMENT ON TABLE "setting" IS 'Place to store a frontend specific setting for members as a string';
-
-COMMENT ON COLUMN "setting"."key" IS 'Name of the setting, preceded by a frontend specific prefix';
-
-
-CREATE TABLE "setting_map" (
-        PRIMARY KEY ("member_id", "key", "subkey"),
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "key"                   TEXT            NOT NULL,
-        "subkey"                TEXT            NOT NULL,
-        "value"                 TEXT            NOT NULL );
-CREATE INDEX "setting_map_key_idx" ON "setting_map" ("key");
-
-COMMENT ON TABLE "setting_map" IS 'Place to store a frontend specific setting for members as a map of key value pairs';
-
-COMMENT ON COLUMN "setting_map"."key"    IS 'Name of the setting, preceded by a frontend specific prefix';
-COMMENT ON COLUMN "setting_map"."subkey" IS 'Key of a map entry';
-COMMENT ON COLUMN "setting_map"."value"  IS 'Value of a map entry';
-
-
-CREATE TABLE "member_relation_setting" (
-        PRIMARY KEY ("member_id", "key", "other_member_id"),
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "key"                   TEXT            NOT NULL,
-        "other_member_id"       INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "value"                 TEXT            NOT NULL );
-
-COMMENT ON TABLE "member_relation_setting" IS 'Place to store a frontend specific setting related to relations between members as a string';
-
-
 CREATE TYPE "member_image_type" AS ENUM ('photo', 'avatar');
 
 COMMENT ON TYPE "member_image_type" IS 'Types of images for a member';
@@ -623,16 +586,6 @@ CREATE INDEX "subscription_unit_id_idx" ON "subscription" ("unit_id");
 COMMENT ON TABLE "subscription" IS 'An entry in this table denotes that the member wishes to receive notifications regardless of his/her privileges in the given unit';
 
 
-CREATE TABLE "unit_setting" (
-        PRIMARY KEY ("member_id", "key", "unit_id"),
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "key"                   TEXT            NOT NULL,
-        "unit_id"               INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "value"                 TEXT            NOT NULL );
-
-COMMENT ON TABLE "unit_setting" IS 'Place for frontend to store unit specific settings of members as strings';
-
-
 CREATE TABLE "area" (
         UNIQUE ("unit_id", "id"),  -- index needed for foreign-key on table "event"
         "id"                    SERIAL4         PRIMARY KEY,
@@ -680,16 +633,6 @@ CREATE TABLE "ignored_area" (
 CREATE INDEX "ignored_area_area_id_idx" ON "ignored_area" ("area_id");
 
 COMMENT ON TABLE "ignored_area" IS 'An entry in this table denotes that the member does not wish to receive notifications for the given subject area unless he/she declared interested in a particular issue';
-
-
-CREATE TABLE "area_setting" (
-        PRIMARY KEY ("member_id", "key", "area_id"),
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "key"                   TEXT            NOT NULL,
-        "area_id"               INT4            REFERENCES "area" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "value"                 TEXT            NOT NULL );
-
-COMMENT ON TABLE "area_setting" IS 'Place for frontend to store area specific settings of members as strings';
 
 
 CREATE TABLE "allowed_policy" (
@@ -858,16 +801,6 @@ COMMENT ON COLUMN "issue_order_in_admission_state"."order_in_area" IS 'Order of 
 COMMENT ON COLUMN "issue_order_in_admission_state"."order_in_unit" IS 'Order of issues in admission state within all areas of a unit; NULL values sort last';
 
 
-CREATE TABLE "issue_setting" (
-        PRIMARY KEY ("member_id", "key", "issue_id"),
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "key"                   TEXT            NOT NULL,
-        "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "value"                 TEXT            NOT NULL );
-
-COMMENT ON TABLE "issue_setting" IS 'Place for frontend to store issue specific settings of members as strings';
-
-
 CREATE TABLE "initiative" (
         UNIQUE ("issue_id", "id"),  -- index needed for foreign-key on table "vote"
         "issue_id"              INT4            NOT NULL REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
@@ -991,16 +924,6 @@ CREATE INDEX "ignored_initiative_initiative_id_idx" ON "ignored_initiative" ("in
 COMMENT ON TABLE "ignored_initiative" IS 'An entry in this table denotes that the member does not wish to receive notifications for the given initiative';
 
 
-CREATE TABLE "initiative_setting" (
-        PRIMARY KEY ("member_id", "key", "initiative_id"),
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "key"                   TEXT            NOT NULL,
-        "initiative_id"         INT4            REFERENCES "initiative" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "value"                 TEXT            NOT NULL );
-
-COMMENT ON TABLE "initiative_setting" IS 'Place for frontend to store initiative specific settings of members as strings';
-
-
 CREATE TABLE "draft" (
         UNIQUE ("initiative_id", "id"),  -- index needed for foreign-key on table "supporter"
         "initiative_id"         INT4            NOT NULL REFERENCES "initiative" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
@@ -1094,16 +1017,6 @@ CREATE TABLE "rendered_suggestion" (
         "content"               TEXT            NOT NULL );
 
 COMMENT ON TABLE "rendered_suggestion" IS 'This table may be used by frontends to cache "rendered" drafts (e.g. HTML output generated from wiki text)';
-
-
-CREATE TABLE "suggestion_setting" (
-        PRIMARY KEY ("member_id", "key", "suggestion_id"),
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "key"                   TEXT            NOT NULL,
-        "suggestion_id"         INT8            REFERENCES "suggestion" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "value"                 TEXT            NOT NULL );
-
-COMMENT ON TABLE "suggestion_setting" IS 'Place for frontend to store suggestion specific settings of members as strings';
 
 
 CREATE TABLE "temporary_suggestion_counts" (
@@ -6313,18 +6226,11 @@ CREATE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
         "location"                     = NULL
         WHERE "id" = "member_id_p";
       -- "text_search_data" is updated by triggers
-      DELETE FROM "setting"            WHERE "member_id" = "member_id_p";
-      DELETE FROM "setting_map"        WHERE "member_id" = "member_id_p";
-      DELETE FROM "member_relation_setting" WHERE "member_id" = "member_id_p";
       DELETE FROM "member_image"       WHERE "member_id" = "member_id_p";
       DELETE FROM "contact"            WHERE "member_id" = "member_id_p";
       DELETE FROM "ignored_member"     WHERE "member_id" = "member_id_p";
       DELETE FROM "session"            WHERE "member_id" = "member_id_p";
-      DELETE FROM "area_setting"       WHERE "member_id" = "member_id_p";
-      DELETE FROM "issue_setting"      WHERE "member_id" = "member_id_p";
       DELETE FROM "ignored_initiative" WHERE "member_id" = "member_id_p";
-      DELETE FROM "initiative_setting" WHERE "member_id" = "member_id_p";
-      DELETE FROM "suggestion_setting" WHERE "member_id" = "member_id_p";
       DELETE FROM "delegation"         WHERE "truster_id" = "member_id_p";
       DELETE FROM "non_voter"          WHERE "member_id" = "member_id_p";
       DELETE FROM "direct_voter" USING "issue"
@@ -6371,18 +6277,11 @@ CREATE FUNCTION "delete_private_data"()
         "password_reset_secret_expiry" = NULL,
         "location"                     = NULL;
       -- "text_search_data" is updated by triggers
-      DELETE FROM "setting";
-      DELETE FROM "setting_map";
-      DELETE FROM "member_relation_setting";
       DELETE FROM "member_image";
       DELETE FROM "contact";
       DELETE FROM "ignored_member";
       DELETE FROM "session";
-      DELETE FROM "area_setting";
-      DELETE FROM "issue_setting";
       DELETE FROM "ignored_initiative";
-      DELETE FROM "initiative_setting";
-      DELETE FROM "suggestion_setting";
       DELETE FROM "non_voter";
       DELETE FROM "direct_voter" USING "issue"
         WHERE "direct_voter"."issue_id" = "issue"."id"
