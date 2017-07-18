@@ -1,12 +1,9 @@
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'unit_created';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'unit_updated';
-ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'unit_removed';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'area_created';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'area_updated';
-ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'area_removed';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'policy_created';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'policy_updated';
-ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'policy_removed';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'suggestion_removed';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'member_activated';
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'member_removed';
@@ -985,10 +982,10 @@ CREATE FUNCTION "write_event_unit_trigger"()
       IF TG_OP = 'UPDATE' THEN
         IF OLD."active" = FALSE AND NEW."active" = FALSE THEN
           RETURN NULL;
-        ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
-          "event_v" := 'unit_created';
-        ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
-          "event_v" := 'unit_removed';
+        --ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
+        --  "event_v" := 'unit_created';
+        --ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
+        --  "event_v" := 'unit_removed';
         ELSIF OLD != NEW THEN
           "event_v" := 'unit_updated';
         ELSE
@@ -1018,10 +1015,10 @@ CREATE FUNCTION "write_event_area_trigger"()
       IF TG_OP = 'UPDATE' THEN
         IF OLD."active" = FALSE AND NEW."active" = FALSE THEN
           RETURN NULL;
-        ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
-          "event_v" := 'area_created';
-        ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
-          "event_v" := 'area_removed';
+        --ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
+        --  "event_v" := 'area_created';
+        --ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
+        --  "event_v" := 'area_removed';
         ELSIF OLD != NEW THEN
           "event_v" := 'area_updated';
         ELSE
@@ -1051,10 +1048,10 @@ CREATE FUNCTION "write_event_policy_trigger"()
       IF TG_OP = 'UPDATE' THEN
         IF OLD."active" = FALSE AND NEW."active" = FALSE THEN
           RETURN NULL;
-        ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
-          "event_v" := 'policy_created';
-        ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
-          "event_v" := 'policy_removed';
+        --ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
+        --  "event_v" := 'policy_created';
+        --ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
+        --  "event_v" := 'policy_removed';
         ELSIF OLD != NEW THEN
           "event_v" := 'policy_updated';
         ELSE

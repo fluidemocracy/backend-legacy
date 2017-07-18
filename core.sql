@@ -1315,13 +1315,10 @@ COMMENT ON COLUMN "vote"."first_preference" IS 'Value is automatically set after
 CREATE TYPE "event_type" AS ENUM (
         'unit_created',
         'unit_updated',
-        'unit_removed',
         'area_created',
         'area_updated',
-        'area_removed',
         'policy_created',
         'policy_updated',
-        'policy_removed',
         'issue_state_changed',
         'initiative_created_in_new_issue',
         'initiative_created_in_existing_issue',
@@ -1722,10 +1719,10 @@ CREATE FUNCTION "write_event_unit_trigger"()
       IF TG_OP = 'UPDATE' THEN
         IF OLD."active" = FALSE AND NEW."active" = FALSE THEN
           RETURN NULL;
-        ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
-          "event_v" := 'unit_created';
-        ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
-          "event_v" := 'unit_removed';
+        --ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
+        --  "event_v" := 'unit_created';
+        --ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
+        --  "event_v" := 'unit_removed';
         ELSIF OLD != NEW THEN
           "event_v" := 'unit_updated';
         ELSE
@@ -1755,10 +1752,10 @@ CREATE FUNCTION "write_event_area_trigger"()
       IF TG_OP = 'UPDATE' THEN
         IF OLD."active" = FALSE AND NEW."active" = FALSE THEN
           RETURN NULL;
-        ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
-          "event_v" := 'area_created';
-        ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
-          "event_v" := 'area_removed';
+        --ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
+        --  "event_v" := 'area_created';
+        --ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
+        --  "event_v" := 'area_removed';
         ELSIF OLD != NEW THEN
           "event_v" := 'area_updated';
         ELSE
@@ -1788,10 +1785,10 @@ CREATE FUNCTION "write_event_policy_trigger"()
       IF TG_OP = 'UPDATE' THEN
         IF OLD."active" = FALSE AND NEW."active" = FALSE THEN
           RETURN NULL;
-        ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
-          "event_v" := 'policy_created';
-        ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
-          "event_v" := 'policy_removed';
+        --ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
+        --  "event_v" := 'policy_created';
+        --ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
+        --  "event_v" := 'policy_removed';
         ELSIF OLD != NEW THEN
           "event_v" := 'policy_updated';
         ELSE
