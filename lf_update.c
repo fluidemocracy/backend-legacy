@@ -140,7 +140,7 @@ int main(int argc, char **argv) {
       else {
         char *snapshot_id, *escaped_snapshot_id;
         int j, count2;
-        snapshot_id = PQgetvalue(res, 0, 0);
+        snapshot_id = PQgetvalue(res2, 0, 0);
         escaped_snapshot_id = PQescapeLiteral(db, snapshot_id, strlen(snapshot_id));
         PQclear(res2);
         if (!escaped_snapshot_id) {
