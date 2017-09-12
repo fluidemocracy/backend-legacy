@@ -1439,14 +1439,24 @@ CREATE FUNCTION "write_event_initiator_trigger"()
       "initiative_row" "initiative"%ROWTYPE;
       "issue_row"      "issue"%ROWTYPE;
       "area_row"       "area"%ROWTYPE;
+      "accepted_v"     BOOLEAN = FALSE;
+      "rejected_v"     BOOLEAN = FALSE;
     BEGIN
       IF TG_OP = 'UPDATE' THEN
         IF
           OLD."initiative_id" = NEW."initiative_id" AND
-          OLD."member_id" = NEW."member_id" AND
-          coalesce(OLD."accepted", FALSE) = coalesce(NEW."accepted", FALSE)
+          OLD."member_id" = NEW."member_id"
         THEN
-          RETURN NULL;
+          IF
+            coalesce(OLD."accepted", FALSE) = coalesce(NEW."accepted", FALSE)
+          THEN
+            RETURN NULL;
+          END IF;
+          IF coalesce(NEW."accepted", FALSE) = TRUE THEN
+            "accepted_v" := TRUE;
+          ELSE
+            "rejected_v" := TRUE;
+          END IF;
         END IF;
       END IF;
       IF (TG_OP = 'DELETE' OR TG_OP = 'UPDATE') AND NOT "accepted_v" THEN
