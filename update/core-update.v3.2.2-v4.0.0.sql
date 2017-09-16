@@ -720,7 +720,10 @@ ALTER TABLE "event" DROP CONSTRAINT "null_constr_for_issue_state_changed";
 ALTER TABLE "event" DROP CONSTRAINT "null_constr_for_initiative_creation_or_revocation_or_new_draft";
 ALTER TABLE "event" DROP CONSTRAINT "null_constr_for_suggestion_creation";
 
-UPDATE "event" SET "unit_id" = "area"."unit_id", "area_id" = "issue"."area_id"
+UPDATE "event" SET
+  "unit_id" = "area"."unit_id",
+  "area_id" = "issue"."area_id",
+  "policy_id" = "issue"."policy_id"
   FROM "issue", "area"
   WHERE "issue"."id" = "event"."issue_id" AND "area"."id" = "issue"."area_id";
 
