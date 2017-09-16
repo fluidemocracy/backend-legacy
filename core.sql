@@ -1331,9 +1331,9 @@ CREATE TYPE "event_type" AS ENUM (
         'initiative_revoked',
         'new_draft_created',
         'suggestion_created',
-        'suggestion_removed',
+        'suggestion_deleted',
         'member_activated',
-        'member_removed',
+        'member_deleted',
         'member_active',
         'member_name_updated',
         'member_profile_updated',
@@ -1439,7 +1439,7 @@ CREATE TABLE "event" (
             "text_value"      ISNULL  AND
             "old_text_value"  ISNULL )),
         CONSTRAINT "constr_for_suggestion_removal" CHECK (
-          "event" != 'suggestion_removed' OR (
+          "event" != 'suggestion_deleted' OR (
             "member_id"       ISNULL AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1458,7 +1458,7 @@ CREATE TABLE "event" (
         CONSTRAINT "constr_for_value_less_member_event" CHECK (
           "event" NOT IN (
             'member_activated',
-            'member_removed',
+            'member_deleted',
             'member_profile_updated',
             'member_image_updated'
           ) OR (
@@ -1728,7 +1728,7 @@ CREATE FUNCTION "write_event_unit_trigger"()
         --ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
         --  "event_v" := 'unit_created';
         --ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
-        --  "event_v" := 'unit_removed';
+        --  "event_v" := 'unit_deleted';
         ELSIF OLD != NEW THEN
           "event_v" := 'unit_updated';
         ELSE
@@ -1761,7 +1761,7 @@ CREATE FUNCTION "write_event_area_trigger"()
         --ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
         --  "event_v" := 'area_created';
         --ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
-        --  "event_v" := 'area_removed';
+        --  "event_v" := 'area_deleted';
         ELSIF OLD != NEW THEN
           "event_v" := 'area_updated';
         ELSE
@@ -1794,7 +1794,7 @@ CREATE FUNCTION "write_event_policy_trigger"()
         --ELSIF OLD."active" = FALSE AND NEW."active" = TRUE THEN
         --  "event_v" := 'policy_created';
         --ELSIF OLD."active" = TRUE AND NEW."active" = FALSE THEN
-        --  "event_v" := 'policy_removed';
+        --  "event_v" := 'policy_deleted';
         ELSIF OLD != NEW THEN
           "event_v" := 'policy_updated';
         ELSE
@@ -1995,7 +1995,7 @@ CREATE FUNCTION "write_event_suggestion_removed_trigger"()
             "unit_id", "area_id", "policy_id", "issue_id", "state",
             "initiative_id", "suggestion_id"
           ) VALUES (
-            'suggestion_removed',
+            'suggestion_deleted',
             "area_row"."unit_id", "issue_row"."area_id",
             "issue_row"."policy_id",
             "initiative_row"."issue_id", "issue_row"."state",
@@ -2055,7 +2055,7 @@ CREATE FUNCTION "write_event_member_trigger"()
           (NEW."activated" ISNULL OR NEW."deleted" NOTNULL)
         THEN
           INSERT INTO "event" ("event", "member_id")
-            VALUES ('member_removed', NEW."id");
+            VALUES ('member_deleted', NEW."id");
         END IF;
       END IF;
       RETURN NULL;
