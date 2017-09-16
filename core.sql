@@ -575,12 +575,12 @@ CREATE TABLE "unit" (
         "description"           TEXT            NOT NULL DEFAULT '',
         "external_reference"    TEXT,
         "member_count"          INT4,
-        "region"                JSONB,
+        "location"              JSONB,
         "text_search_data"      TSVECTOR );
 CREATE INDEX "unit_root_idx" ON "unit" ("id") WHERE "parent_id" ISNULL;
 CREATE INDEX "unit_parent_id_idx" ON "unit" ("parent_id");
 CREATE INDEX "unit_active_idx" ON "unit" ("active");
-CREATE INDEX "unit_region_idx" ON "unit" USING gist ((GeoJSON_to_ecluster("region")));
+CREATE INDEX "unit_location_idx" ON "unit" USING gist ((GeoJSON_to_ecluster("location")));
 CREATE INDEX "unit_text_search_data_idx" ON "unit" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "unit"
@@ -594,7 +594,7 @@ COMMENT ON COLUMN "unit"."parent_id"          IS 'Parent id of tree node; Multip
 COMMENT ON COLUMN "unit"."active"             IS 'TRUE means new issues can be created in areas of this unit';
 COMMENT ON COLUMN "unit"."external_reference" IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "unit"."member_count"       IS 'Count of members as determined by column "voting_right" in table "privilege" (only active members counted)';
-COMMENT ON COLUMN "unit"."region"             IS 'Scattered (or hollow) polygon represented as an array of polygons indicating valid coordinates for initiatives of issues with this policy';
+COMMENT ON COLUMN "unit"."location"           IS 'Geographic location on earth as GeoJSON object indicating valid coordinates for initiatives of issues with this policy';
 
 
 CREATE TABLE "subscription" (
@@ -621,10 +621,10 @@ CREATE TABLE "area" (
         "quorum_den"            INT4            CHECK ("quorum_den" > 0),
         "issue_quorum"          INT4,
         "external_reference"    TEXT,
-        "region"                JSONB,
+        "location"              JSONB,
         "text_search_data"      TSVECTOR );
 CREATE INDEX "area_active_idx" ON "area" ("active");
-CREATE INDEX "area_region_idx" ON "area" USING gist ((GeoJSON_to_ecluster("region")));
+CREATE INDEX "area_location_idx" ON "area" USING gist ((GeoJSON_to_ecluster("location")));
 CREATE INDEX "area_text_search_data_idx" ON "area" USING gin ("text_search_data");
 CREATE TRIGGER "update_text_search_data"
   BEFORE INSERT OR UPDATE ON "area"
@@ -643,7 +643,7 @@ COMMENT ON COLUMN "area"."quorum_factor"      IS 'Parameter for dynamic issue qu
 COMMENT ON COLUMN "area"."quorum_den"         IS 'Parameter for dynamic issue quorum: when set, dynamic quorum is multiplied with "issue"."population" and divided by "quorum_den" (and then rounded up)';
 COMMENT ON COLUMN "area"."issue_quorum"       IS 'Additional dynamic issue quorum based on the number of open accepted issues; automatically calculated by function "issue_admission"';
 COMMENT ON COLUMN "area"."external_reference" IS 'Opaque data field to store an external reference';
-COMMENT ON COLUMN "area"."region"             IS 'Scattered (or hollow) polygon represented as an array of polygons indicating valid coordinates for initiatives of issues with this policy';
+COMMENT ON COLUMN "area"."location"           IS 'Geographic location on earth as GeoJSON object indicating valid coordinates for initiatives of issues with this policy';
 
 
 CREATE TABLE "ignored_area" (
