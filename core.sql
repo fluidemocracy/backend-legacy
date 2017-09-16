@@ -93,6 +93,7 @@ COMMENT ON COLUMN "contingent"."initiative_limit" IS 'Number of new initiatives 
 CREATE TABLE "member" (
         "id"                    SERIAL4         PRIMARY KEY,
         "created"               TIMESTAMPTZ     NOT NULL DEFAULT now(),
+        "deleted"               TIMESTAMPTZ,
         "invite_code"           TEXT            UNIQUE,
         "invite_code_expiry"    TIMESTAMPTZ,
         "admin_comment"         TEXT,
@@ -128,6 +129,8 @@ CREATE TABLE "member" (
         "authentication"        TEXT,
         "location"              JSONB,
         "text_search_data"      TSVECTOR,
+        CONSTRAINT "deleted_requires_locked"
+          CHECK ("deleted" ISNULL OR "locked" = TRUE),
         CONSTRAINT "active_requires_activated_and_last_activity"
           CHECK ("active" = FALSE OR ("activated" NOTNULL AND "last_activity" NOTNULL)),
         CONSTRAINT "authority_requires_uid_and_vice_versa" 
@@ -165,6 +168,7 @@ COMMENT ON COLUMN "member"."password"             IS 'Password (preferably as cr
 COMMENT ON COLUMN "member"."authority"            IS 'NULL if LiquidFeedback Core is authoritative for the member account; otherwise a string that indicates the source/authority of the external account (e.g. ''LDAP'' for an LDAP account)';
 COMMENT ON COLUMN "member"."authority_uid"        IS 'Unique identifier (unique per "authority") that allows to identify an external account (e.g. even if the login name changes)';
 COMMENT ON COLUMN "member"."authority_login"      IS 'Login name for external accounts (field is not unique!)';
+COMMENT ON COLUMN "member"."deleted"              IS 'Timestamp of deletion (set by "delete_member" function)';
 COMMENT ON COLUMN "member"."locked"               IS 'Locked members can not log in.';
 COMMENT ON COLUMN "member"."active"               IS 'Memberships, support and votes are taken into account when corresponding members are marked as active. Automatically set to FALSE, if "last_activity" is older than "system_setting"."member_ttl".';
 COMMENT ON COLUMN "member"."admin"                IS 'TRUE for admins, which can administrate other users and setup policies and areas';
@@ -2015,7 +2019,7 @@ CREATE FUNCTION "write_event_member_trigger"()
   LANGUAGE 'plpgsql' VOLATILE AS $$
     BEGIN
       IF TG_OP = 'INSERT' THEN
-        IF NEW."activated" NOTNULL THEN
+        IF NEW."activated" NOTNULL AND NEW."deleted" ISNULL THEN
           INSERT INTO "event" ("event", "member_id")
             VALUES ('member_activated', NEW."id");
         END IF;
@@ -2027,6 +2031,18 @@ CREATE FUNCTION "write_event_member_trigger"()
         IF OLD."id" != NEW."id" THEN
           RAISE EXCEPTION 'Cannot change member ID';
         END IF;
+        IF
+          (OLD."activated" ISNULL OR OLD."deleted" NOTNULL) AND
+          NEW."activated" NOTNULL AND NEW."deleted" ISNULL
+        THEN
+          INSERT INTO "event" ("event", "member_id")
+            VALUES ('member_activated', NEW."id");
+        END IF;
+        IF OLD."active" != NEW."active" THEN
+          INSERT INTO "event" ("event", "member_id", "boolean_value") VALUES (
+            'member_active', NEW."id", NEW."active"
+          );
+        END IF;
         IF OLD."name" != NEW."name" THEN
           INSERT INTO "event" (
             "event", "member_id", "text_value", "old_text_value"
@@ -2034,17 +2050,9 @@ CREATE FUNCTION "write_event_member_trigger"()
             'member_name_updated', NEW."id", NEW."name", OLD."name"
           );
         END IF;
-        IF OLD."active" != NEW."active" THEN
-          INSERT INTO "event" ("event", "member_id", "boolean_value") VALUES (
-            'member_active', NEW."id", NEW."active"
-          );
-        END IF;
         IF
-          OLD."activated" NOTNULL AND
-          (OLD."login" NOTNULL OR OLD."authority_login" NOTNULL) AND
-          NEW."login"           ISNULL AND
-          NEW."authority_login" ISNULL AND
-          NEW."locked"          = TRUE
+          OLD."activated" NOTNULL AND OLD."deleted" ISNULL AND
+          (NEW."activated" ISNULL OR NEW."deleted" NOTNULL)
         THEN
           INSERT INTO "event" ("event", "member_id")
             VALUES ('member_removed', NEW."id");
@@ -6247,6 +6255,7 @@ CREATE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
         "authority"                    = NULL,
         "authority_uid"                = NULL,
         "authority_login"              = NULL,
+        "deleted"                      = coalesce("deleted", now()),
         "locked"                       = TRUE,
         "active"                       = FALSE,
         "notify_email"                 = NULL,

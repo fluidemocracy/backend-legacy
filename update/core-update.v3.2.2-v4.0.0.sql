@@ -31,7 +31,14 @@ CREATE OR REPLACE VIEW "liquid_feedback_version" AS
 ALTER TABLE "system_setting" ADD COLUMN "snapshot_retention" INTERVAL;
 
 COMMENT ON COLUMN "system_setting"."snapshot_retention" IS 'Unreferenced snapshots are retained for the given period of time after creation; set to NULL for infinite retention.';
+
+
+ALTER TABLE "member" ADD COLUMN "deleted" TIMESTAMPTZ;
+ALTER TABLE "member" ADD CONSTRAINT "deleted_requires_locked"
+  CHECK ("deleted" ISNULL OR "locked" = TRUE);
  
+COMMENT ON COLUMN "member"."deleted" IS 'Timestamp of deletion (set by "delete_member" function)';
+
  
 CREATE TABLE "member_settings" (
         "member_id"             INT4            PRIMARY KEY REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
@@ -1250,7 +1257,7 @@ CREATE FUNCTION "write_event_member_trigger"()
   LANGUAGE 'plpgsql' VOLATILE AS $$
     BEGIN
       IF TG_OP = 'INSERT' THEN
-        IF NEW."activated" NOTNULL THEN
+        IF NEW."activated" NOTNULL AND NEW."deleted" ISNULL THEN
           INSERT INTO "event" ("event", "member_id")
             VALUES ('member_activated', NEW."id");
         END IF;
@@ -1262,6 +1269,18 @@ CREATE FUNCTION "write_event_member_trigger"()
         IF OLD."id" != NEW."id" THEN
           RAISE EXCEPTION 'Cannot change member ID';
         END IF;
+        IF
+          (OLD."activated" ISNULL OR OLD."deleted" NOTNULL) AND
+          NEW."activated" NOTNULL AND NEW."deleted" ISNULL
+        THEN
+          INSERT INTO "event" ("event", "member_id")
+            VALUES ('member_activated', NEW."id");
+        END IF;
+        IF OLD."active" != NEW."active" THEN
+          INSERT INTO "event" ("event", "member_id", "boolean_value") VALUES (
+            'member_active', NEW."id", NEW."active"
+          );
+        END IF;
         IF OLD."name" != NEW."name" THEN
           INSERT INTO "event" (
             "event", "member_id", "text_value", "old_text_value"
@@ -1269,17 +1288,9 @@ CREATE FUNCTION "write_event_member_trigger"()
             'member_name_updated', NEW."id", NEW."name", OLD."name"
           );
         END IF;
-        IF OLD."active" != NEW."active" THEN
-          INSERT INTO "event" ("event", "member_id", "boolean_value") VALUES (
-            'member_active', NEW."id", NEW."active"
-          );
-        END IF;
         IF
-          OLD."activated" NOTNULL AND
-          (OLD."login" NOTNULL OR OLD."authority_login" NOTNULL) AND
-          NEW."login"           ISNULL AND
-          NEW."authority_login" ISNULL AND
-          NEW."locked"          = TRUE
+          OLD."activated" NOTNULL AND OLD."deleted" ISNULL AND
+          (NEW."activated" ISNULL OR NEW."deleted" NOTNULL)
         THEN
           INSERT INTO "event" ("event", "member_id")
             VALUES ('member_removed', NEW."id");
@@ -3271,6 +3282,7 @@ CREATE OR REPLACE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
         "authority"                    = NULL,
         "authority_uid"                = NULL,
         "authority_login"              = NULL,
+        "deleted"                      = coalesce("deleted", now()),
         "locked"                       = TRUE,
         "active"                       = FALSE,
         "notify_email"                 = NULL,
