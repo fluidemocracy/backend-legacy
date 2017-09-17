@@ -151,43 +151,6 @@ CREATE TRIGGER "update_text_search_data"
     "name", "identification");
  
 
-CREATE TABLE "cross_unit_verification" (
-        PRIMARY KEY ("unit_id", "trusted_unit_id"),
-        "unit_id"               INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "trusted_unit_id"       INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE );
-
-COMMENT ON TABLE "cross_unit_verification" IS 'Enables member verifications in a unit to count for other units as well (non-transitively)';
-
-COMMENT ON COLUMN "cross_unit_verification"."unit_id"         IS 'Unit for which verification in "trusted_unit_id" is also taken into account';
-COMMENT ON COLUMN "cross_unit_verification"."trusted_unit_id" IS 'Unit where verification exists';
-
-
-CREATE TABLE "verification" (
-        "unit_id"               INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "created"               TIMESTAMPTZ     NOT NULL DEFAULT now(),
-        --"expiry"                TIMESTAMPTZ,  -- TODO
-        "comment"               TEXT );
-CREATE INDEX "verification_unit_id_idx" ON "verification" ("unit_id");
-CREATE INDEX "verification_member_id_idx" ON "verification" ("member_id");
-
-COMMENT ON TABLE "verification" IS 'Member verification status';
-
-
-CREATE VIEW "verified_privilege" AS
-  SELECT DISTINCT "privilege".* FROM "privilege"
-  LEFT JOIN "cross_unit_verification" AS "cross"
-    ON "privilege"."unit_id" = "cross"."unit_id"
-  LEFT JOIN "verification"
-    ON (
-      "privilege"."unit_id" = "verification"."unit_id" OR
-      "cross"."trusted_unit_id" = "verification"."unit_id"
-    )
-    AND "privilege"."member_id" = "verification"."member_id";
-
-COMMENT ON VIEW "verified_privilege" IS 'View on privilege table containing only entries where verification of member in unit has been done';
-
-
 CREATE VIEW "member_eligible_to_be_notified" AS
   SELECT * FROM "member"
   WHERE "activated" NOTNULL AND "locked" = FALSE;
@@ -251,10 +214,10 @@ CREATE VIEW "newsletter_to_send" AS
     "newsletter"."id" AS "newsletter_id",
     "newsletter"."published"
   FROM "newsletter" CROSS JOIN "member_eligible_to_be_notified" AS "member"
-  LEFT JOIN "verified_privilege" ON
-    "verified_privilege"."member_id" = "member"."id" AND
-    "verified_privilege"."unit_id" = "newsletter"."unit_id" AND
-    "verified_privilege"."voting_right" = TRUE
+  LEFT JOIN "privilege" ON
+    "privilege"."member_id" = "member"."id" AND
+    "privilege"."unit_id" = "newsletter"."unit_id" AND
+    "privilege"."voting_right" = TRUE
   LEFT JOIN "subscription" ON
     "subscription"."member_id" = "member"."id" AND
     "subscription"."unit_id" = "newsletter"."unit_id"
@@ -265,7 +228,7 @@ CREATE VIEW "newsletter_to_send" AS
     "newsletter"."include_all_members" = TRUE )
   AND (
     "newsletter"."unit_id" ISNULL OR
-    "verified_privilege"."member_id" NOTNULL OR
+    "privilege"."member_id" NOTNULL OR
     "subscription"."member_id" NOTNULL );
 
 COMMENT ON VIEW "newsletter_to_send" IS 'List of "newsletter_id"s for each member that are due to be sent out';
@@ -489,7 +452,7 @@ ALTER TABLE "unit" ADD COLUMN "location" JSONB;
 
 CREATE INDEX "unit_location_idx" ON "unit" USING gist ((GeoJSON_to_ecluster("location")));
 
-COMMENT ON COLUMN "unit"."member_count" IS 'Count of members as determined by column "voting_right" in view "verified_privilege" (only active members counted)';
+COMMENT ON COLUMN "unit"."member_count" IS 'Count of members as determined by column "voting_right" in table "privilege" (only active members counted)';
 COMMENT ON COLUMN "unit"."location"     IS 'Geographic location on earth as GeoJSON object indicating valid coordinates for initiatives of issues with this policy';
  
 
@@ -2094,10 +2057,10 @@ CREATE OR REPLACE VIEW "issue_delegation" AS
     OR "delegation"."issue_id" = "issue"."id"
   JOIN "member"
     ON "delegation"."truster_id" = "member"."id"
-  JOIN "verified_privilege"
-    ON "area"."unit_id" = "verified_privilege"."unit_id"
-    AND "delegation"."truster_id" = "verified_privilege"."member_id"
-  WHERE "member"."active" AND "verified_privilege"."voting_right"
+  JOIN "privilege"
+    ON "area"."unit_id" = "privilege"."unit_id"
+    AND "delegation"."truster_id" = "privilege"."member_id"
+  WHERE "member"."active" AND "privilege"."voting_right"
   ORDER BY
     "issue"."id",
     "delegation"."truster_id",
@@ -2108,10 +2071,10 @@ CREATE VIEW "unit_member" AS
   SELECT
     "unit"."id"   AS "unit_id",
     "member"."id" AS "member_id"
-  FROM "verified_privilege"
-  JOIN "unit"   ON "unit_id"     = "verified_privilege"."unit_id"
-  JOIN "member" ON "member"."id" = "verified_privilege"."member_id"
-  WHERE "verified_privilege"."voting_right" AND "member"."active";
+  FROM "privilege"
+  JOIN "unit"   ON "unit_id"     = "privilege"."unit_id"
+  JOIN "member" ON "member"."id" = "privilege"."member_id"
+  WHERE "privilege"."voting_right" AND "member"."active";
 
 COMMENT ON VIEW "unit_member" IS 'Active members with voting right in a unit';
  
@@ -2336,11 +2299,11 @@ CREATE OR REPLACE FUNCTION "delegation_chain"
         END IF;
         "output_row"."scope_in" := "output_row"."scope_out";
         "output_row"."member_valid" := EXISTS (
-          SELECT NULL FROM "member" JOIN "verified_privilege"
-          ON "verified_privilege"."member_id" = "member"."id"
-          AND "verified_privilege"."unit_id" = "unit_id_v"
+          SELECT NULL FROM "member" JOIN "privilege"
+          ON "privilege"."member_id" = "member"."id"
+          AND "privilege"."unit_id" = "unit_id_v"
           WHERE "id" = "output_row"."member_id"
-          AND "member"."active" AND "verified_privilege"."voting_right"
+          AND "member"."active" AND "privilege"."voting_right"
         );
         "simulate_here_v" := (
           "simulate_v" AND
@@ -2754,11 +2717,11 @@ CREATE FUNCTION "take_snapshot"
           JOIN "area" ON "issue"."area_id" = "area"."id"
           JOIN "interest" ON "issue"."id" = "interest"."issue_id"
           JOIN "member" ON "interest"."member_id" = "member"."id"
-          JOIN "verified_privilege"
-            ON "verified_privilege"."unit_id" = "area"."unit_id"
-            AND "verified_privilege"."member_id" = "member"."id"
+          JOIN "privilege"
+            ON "privilege"."unit_id" = "area"."unit_id"
+            AND "privilege"."member_id" = "member"."id"
           WHERE "issue"."id" = "issue_id_v"
-          AND "member"."active" AND "verified_privilege"."voting_right";
+          AND "member"."active" AND "privilege"."voting_right";
         FOR "member_id_v" IN
           SELECT "member_id" FROM "direct_interest_snapshot"
           WHERE "snapshot_id" = "snapshot_id_v"
@@ -3608,288 +3571,6 @@ DROP TYPE "snapshot_event";
 ALTER TABLE "issue" ADD CONSTRAINT "snapshot_required" CHECK (
   ("half_frozen" ISNULL OR "half_freeze_snapshot_id" NOTNULL) AND
   ("fully_frozen" ISNULL OR "full_freeze_snapshot_id" NOTNULL) );
-
-
-CREATE OR REPLACE VIEW "unit_delegation" AS
-  SELECT
-    "unit"."id" AS "unit_id",
-    "delegation"."id",
-    "delegation"."truster_id",
-    "delegation"."trustee_id",
-    "delegation"."scope"
-  FROM "unit"
-  JOIN "delegation"
-    ON "delegation"."unit_id" = "unit"."id"
-  JOIN "member"
-    ON "delegation"."truster_id" = "member"."id"
-  JOIN "verified_privilege"
-    ON "delegation"."unit_id" = "verified_privilege"."unit_id"
-    AND "delegation"."truster_id" = "verified_privilege"."member_id"
-  WHERE "member"."active" AND "verified_privilege"."voting_right";
-
-CREATE OR REPLACE VIEW "area_delegation" AS
-  SELECT DISTINCT ON ("area"."id", "delegation"."truster_id")
-    "area"."id" AS "area_id",
-    "delegation"."id",
-    "delegation"."truster_id",
-    "delegation"."trustee_id",
-    "delegation"."scope"
-  FROM "area"
-  JOIN "delegation"
-    ON "delegation"."unit_id" = "area"."unit_id"
-    OR "delegation"."area_id" = "area"."id"
-  JOIN "member"
-    ON "delegation"."truster_id" = "member"."id"
-  JOIN "verified_privilege"
-    ON "area"."unit_id" = "verified_privilege"."unit_id"
-    AND "delegation"."truster_id" = "verified_privilege"."member_id"
-  WHERE "member"."active" AND "verified_privilege"."voting_right"
-  ORDER BY
-    "area"."id",
-    "delegation"."truster_id",
-    "delegation"."scope" DESC;
-
-CREATE OR REPLACE VIEW "event_for_notification" AS
-  SELECT
-    "member"."id" AS "recipient_id",
-    "event".*
-  FROM "member" CROSS JOIN "event"
-  JOIN "issue" ON "issue"."id" = "event"."issue_id"
-  JOIN "area" ON "area"."id" = "issue"."area_id"
-  LEFT JOIN "verified_privilege" ON
-    "verified_privilege"."member_id" = "member"."id" AND
-    "verified_privilege"."unit_id" = "area"."unit_id" AND
-    "verified_privilege"."voting_right" = TRUE
-  LEFT JOIN "subscription" ON
-    "subscription"."member_id" = "member"."id" AND
-    "subscription"."unit_id" = "area"."unit_id"
-  LEFT JOIN "ignored_area" ON
-    "ignored_area"."member_id" = "member"."id" AND
-    "ignored_area"."area_id" = "issue"."area_id"
-  LEFT JOIN "interest" ON
-    "interest"."member_id" = "member"."id" AND
-    "interest"."issue_id" = "event"."issue_id"
-  LEFT JOIN "supporter" ON
-    "supporter"."member_id" = "member"."id" AND
-    "supporter"."initiative_id" = "event"."initiative_id"
-  WHERE (
-    "verified_privilege"."member_id" NOTNULL OR
-    "subscription"."member_id" NOTNULL )
-  AND ("ignored_area"."member_id" ISNULL OR "interest"."member_id" NOTNULL)
-  AND (
-    "event"."event" = 'issue_state_changed'::"event_type" OR
-    ( "event"."event" = 'initiative_revoked'::"event_type" AND
-      "supporter"."member_id" NOTNULL ) );
-
-CREATE OR REPLACE FUNCTION "featured_initiative"
-  ( "recipient_id_p" "member"."id"%TYPE,
-    "area_id_p"      "area"."id"%TYPE )
-  RETURNS SETOF "initiative"."id"%TYPE
-  LANGUAGE 'plpgsql' STABLE AS $$
-    DECLARE
-      "counter_v"         "member"."notification_counter"%TYPE;
-      "sample_size_v"     "member"."notification_sample_size"%TYPE;
-      "initiative_id_ary" INT4[];  --"initiative"."id"%TYPE[]
-      "match_v"           BOOLEAN;
-      "member_id_v"       "member"."id"%TYPE;
-      "seed_v"            TEXT;
-      "initiative_id_v"   "initiative"."id"%TYPE;
-    BEGIN
-      SELECT "notification_counter", "notification_sample_size"
-        INTO "counter_v", "sample_size_v"
-        FROM "member" WHERE "id" = "recipient_id_p";
-      IF COALESCE("sample_size_v" <= 0, TRUE) THEN
-        RETURN;
-      END IF;
-      "initiative_id_ary" := '{}';
-      LOOP
-        "match_v" := FALSE;
-        FOR "member_id_v", "seed_v" IN
-          SELECT * FROM (
-            SELECT DISTINCT
-              "supporter"."member_id",
-              md5(
-                "recipient_id_p" || '-' ||
-                "counter_v"      || '-' ||
-                "area_id_p"      || '-' ||
-                "supporter"."member_id"
-              ) AS "seed"
-            FROM "supporter"
-            JOIN "initiative" ON "initiative"."id" = "supporter"."initiative_id"
-            JOIN "issue" ON "issue"."id" = "initiative"."issue_id"
-            WHERE "supporter"."member_id" != "recipient_id_p"
-            AND "issue"."area_id" = "area_id_p"
-            AND "issue"."state" IN ('admission', 'discussion', 'verification')
-          ) AS "subquery"
-          ORDER BY "seed"
-        LOOP
-          SELECT "initiative"."id" INTO "initiative_id_v"
-            FROM "initiative"
-            JOIN "issue" ON "issue"."id" = "initiative"."issue_id"
-            JOIN "area" ON "area"."id" = "issue"."area_id"
-            JOIN "supporter" ON "supporter"."initiative_id" = "initiative"."id"
-            LEFT JOIN "supporter" AS "self_support" ON
-              "self_support"."initiative_id" = "initiative"."id" AND
-              "self_support"."member_id" = "recipient_id_p"
-            LEFT JOIN "verified_privilege" ON
-              "verified_privilege"."member_id" = "recipient_id_p" AND
-              "verified_privilege"."unit_id" = "area"."unit_id" AND
-              "verified_privilege"."voting_right" = TRUE
-            LEFT JOIN "subscription" ON
-              "subscription"."member_id" = "recipient_id_p" AND
-              "subscription"."unit_id" = "area"."unit_id"
-            LEFT JOIN "ignored_initiative" ON
-              "ignored_initiative"."member_id" = "recipient_id_p" AND
-              "ignored_initiative"."initiative_id" = "initiative"."id"
-            WHERE "supporter"."member_id" = "member_id_v"
-            AND "issue"."area_id" = "area_id_p"
-            AND "issue"."state" IN ('admission', 'discussion', 'verification')
-            AND "initiative"."revoked" ISNULL
-            AND "self_support"."member_id" ISNULL
-            AND NOT "initiative_id_ary" @> ARRAY["initiative"."id"]
-            AND (
-              "verified_privilege"."member_id" NOTNULL OR
-              "subscription"."member_id" NOTNULL )
-            AND "ignored_initiative"."member_id" ISNULL
-            AND NOT EXISTS (
-              SELECT NULL FROM "draft"
-              JOIN "ignored_member" ON
-                "ignored_member"."member_id" = "recipient_id_p" AND
-                "ignored_member"."other_member_id" = "draft"."author_id"
-              WHERE "draft"."initiative_id" = "initiative"."id"
-            )
-            ORDER BY md5("seed_v" || '-' || "initiative"."id")
-            LIMIT 1;
-          IF FOUND THEN
-            "match_v" := TRUE;
-            RETURN NEXT "initiative_id_v";
-            IF array_length("initiative_id_ary", 1) + 1 >= "sample_size_v" THEN
-              RETURN;
-            END IF;
-            "initiative_id_ary" := "initiative_id_ary" || "initiative_id_v";
-          END IF;
-        END LOOP;
-        EXIT WHEN NOT "match_v";
-      END LOOP;
-      RETURN;
-    END;
-  $$;
-
-CREATE OR REPLACE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
-  RETURNS VOID
-  LANGUAGE 'plpgsql' VOLATILE AS $$
-    DECLARE
-      "area_id_v"   "area"."id"%TYPE;
-      "unit_id_v"   "unit"."id"%TYPE;
-      "member_id_v" "member"."id"%TYPE;
-    BEGIN
-      PERFORM "require_transaction_isolation"();
-      SELECT "area_id" INTO "area_id_v" FROM "issue" WHERE "id" = "issue_id_p";
-      SELECT "unit_id" INTO "unit_id_v" FROM "area"  WHERE "id" = "area_id_v";
-      -- override protection triggers:
-      INSERT INTO "temporary_transaction_data" ("key", "value")
-        VALUES ('override_protection_triggers', TRUE::TEXT);
-      -- delete timestamp of voting comment:
-      UPDATE "direct_voter" SET "comment_changed" = NULL
-        WHERE "issue_id" = "issue_id_p";
-      -- delete delegating votes (in cases of manual reset of issue state):
-      DELETE FROM "delegating_voter"
-        WHERE "issue_id" = "issue_id_p";
-      -- delete votes from non-privileged voters:
-      DELETE FROM "direct_voter"
-        USING (
-          SELECT
-            "direct_voter"."member_id"
-          FROM "direct_voter"
-          JOIN "member" ON "direct_voter"."member_id" = "member"."id"
-          LEFT JOIN "verified_privilege"
-          ON "verified_privilege"."unit_id" = "unit_id_v"
-          AND "verified_privilege"."member_id" = "direct_voter"."member_id"
-          WHERE "direct_voter"."issue_id" = "issue_id_p" AND (
-            "member"."active" = FALSE OR
-            "verified_privilege"."voting_right" ISNULL OR
-            "verified_privilege"."voting_right" = FALSE
-          )
-        ) AS "subquery"
-        WHERE "direct_voter"."issue_id" = "issue_id_p"
-        AND "direct_voter"."member_id" = "subquery"."member_id";
-      -- consider delegations:
-      UPDATE "direct_voter" SET "weight" = 1
-        WHERE "issue_id" = "issue_id_p";
-      PERFORM "add_vote_delegations"("issue_id_p");
-      -- mark first preferences:
-      UPDATE "vote" SET "first_preference" = "subquery"."first_preference"
-        FROM (
-          SELECT
-            "vote"."initiative_id",
-            "vote"."member_id",
-            CASE WHEN "vote"."grade" > 0 THEN
-              CASE WHEN "vote"."grade" = max("agg"."grade") THEN TRUE ELSE FALSE END
-            ELSE NULL
-            END AS "first_preference"
-          FROM "vote"
-          JOIN "initiative"  -- NOTE: due to missing index on issue_id
-          ON "vote"."issue_id" = "initiative"."issue_id"
-          JOIN "vote" AS "agg"
-          ON "initiative"."id" = "agg"."initiative_id"
-          AND "vote"."member_id" = "agg"."member_id"
-          GROUP BY "vote"."initiative_id", "vote"."member_id", "vote"."grade"
-        ) AS "subquery"
-        WHERE "vote"."issue_id" = "issue_id_p"
-        AND "vote"."initiative_id" = "subquery"."initiative_id"
-        AND "vote"."member_id" = "subquery"."member_id";
-      -- finish overriding protection triggers (avoids garbage):
-      DELETE FROM "temporary_transaction_data"
-        WHERE "key" = 'override_protection_triggers';
-      -- materialize battle_view:
-      -- NOTE: "closed" column of issue must be set at this point
-      DELETE FROM "battle" WHERE "issue_id" = "issue_id_p";
-      INSERT INTO "battle" (
-        "issue_id",
-        "winning_initiative_id", "losing_initiative_id",
-        "count"
-      ) SELECT
-        "issue_id",
-        "winning_initiative_id", "losing_initiative_id",
-        "count"
-        FROM "battle_view" WHERE "issue_id" = "issue_id_p";
-      -- set voter count:
-      UPDATE "issue" SET
-        "voter_count" = (
-          SELECT coalesce(sum("weight"), 0)
-          FROM "direct_voter" WHERE "issue_id" = "issue_id_p"
-        )
-        WHERE "id" = "issue_id_p";
-      -- copy "positive_votes" and "negative_votes" from "battle" table:
-      -- NOTE: "first_preference_votes" is set to a default of 0 at this step
-      UPDATE "initiative" SET
-        "first_preference_votes" = 0,
-        "positive_votes" = "battle_win"."count",
-        "negative_votes" = "battle_lose"."count"
-        FROM "battle" AS "battle_win", "battle" AS "battle_lose"
-        WHERE
-          "battle_win"."issue_id" = "issue_id_p" AND
-          "battle_win"."winning_initiative_id" = "initiative"."id" AND
-          "battle_win"."losing_initiative_id" ISNULL AND
-          "battle_lose"."issue_id" = "issue_id_p" AND
-          "battle_lose"."losing_initiative_id" = "initiative"."id" AND
-          "battle_lose"."winning_initiative_id" ISNULL;
-      -- calculate "first_preference_votes":
-      -- NOTE: will only set values not equal to zero
-      UPDATE "initiative" SET "first_preference_votes" = "subquery"."sum"
-        FROM (
-          SELECT "vote"."initiative_id", sum("direct_voter"."weight")
-          FROM "vote" JOIN "direct_voter"
-          ON "vote"."issue_id" = "direct_voter"."issue_id"
-          AND "vote"."member_id" = "direct_voter"."member_id"
-          WHERE "vote"."first_preference"
-          GROUP BY "vote"."initiative_id"
-        ) AS "subquery"
-        WHERE "initiative"."issue_id" = "issue_id_p"
-        AND "initiative"."admitted"
-        AND "initiative"."id" = "subquery"."initiative_id";
-    END;
-  $$;
 
 
 COMMIT;

@@ -597,19 +597,8 @@ COMMENT ON TABLE "unit" IS 'Organizational units organized as trees; Delegations
 COMMENT ON COLUMN "unit"."parent_id"          IS 'Parent id of tree node; Multiple roots allowed';
 COMMENT ON COLUMN "unit"."active"             IS 'TRUE means new issues can be created in areas of this unit';
 COMMENT ON COLUMN "unit"."external_reference" IS 'Opaque data field to store an external reference';
-COMMENT ON COLUMN "unit"."member_count"       IS 'Count of members as determined by column "voting_right" in view "verified_privilege" (only active members counted)';
+COMMENT ON COLUMN "unit"."member_count"       IS 'Count of members as determined by column "voting_right" in table "privilege" (only active members counted)';
 COMMENT ON COLUMN "unit"."location"           IS 'Geographic location on earth as GeoJSON object indicating valid coordinates for initiatives of issues with this policy';
-
-
-CREATE TABLE "cross_unit_verification" (
-        PRIMARY KEY ("unit_id", "trusted_unit_id"),
-        "unit_id"               INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "trusted_unit_id"       INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE );
-
-COMMENT ON TABLE "cross_unit_verification" IS 'Enables member verifications in a unit to count for other units as well (non-transitively)';
-
-COMMENT ON COLUMN "cross_unit_verification"."unit_id"         IS 'Unit for which verification in "trusted_unit_id" is also taken into account';
-COMMENT ON COLUMN "cross_unit_verification"."trusted_unit_id" IS 'Unit where verification exists';
 
 
 CREATE TABLE "subscription" (
@@ -1068,18 +1057,6 @@ CREATE TABLE "temporary_suggestion_counts" (
 COMMENT ON TABLE "temporary_suggestion_counts" IS 'Holds certain calculated values (suggestion counts) temporarily until they can be copied into table "suggestion"';
 
 COMMENT ON COLUMN "temporary_suggestion_counts"."id"  IS 'References "suggestion" ("id") but has no referential integrity trigger associated, due to performance/locking issues';
-
-
-CREATE TABLE "verification" (
-        "unit_id"               INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "created"               TIMESTAMPTZ     NOT NULL DEFAULT now(),
-        --"expiry"                TIMESTAMPTZ,  -- TODO
-        "comment"               TEXT );
-CREATE INDEX "verification_unit_id_idx" ON "verification" ("unit_id");
-CREATE INDEX "verification_member_id_idx" ON "verification" ("member_id");
-
-COMMENT ON TABLE "verification" IS 'Member verification status';
 
 
 CREATE TABLE "privilege" (
@@ -3336,20 +3313,6 @@ CREATE VIEW "issue_for_admission" AS
 COMMENT ON VIEW "issue_for_admission" IS 'Contains up to 1 issue per area eligible to pass from ''admission'' to ''discussion'' state; needs to be recalculated after admitting the issue in this view';
 
 
-CREATE VIEW "verified_privilege" AS
-  SELECT DISTINCT "privilege".* FROM "privilege"
-  LEFT JOIN "cross_unit_verification" AS "cross"
-    ON "privilege"."unit_id" = "cross"."unit_id"
-  LEFT JOIN "verification"
-    ON (
-      "privilege"."unit_id" = "verification"."unit_id" OR
-      "cross"."trusted_unit_id" = "verification"."unit_id"
-    )
-    AND "privilege"."member_id" = "verification"."member_id";
-
-COMMENT ON VIEW "verified_privilege" IS 'View on privilege table containing only entries where verification of member in unit has been done';
-
-
 CREATE VIEW "unit_delegation" AS
   SELECT
     "unit"."id" AS "unit_id",
@@ -3362,10 +3325,10 @@ CREATE VIEW "unit_delegation" AS
     ON "delegation"."unit_id" = "unit"."id"
   JOIN "member"
     ON "delegation"."truster_id" = "member"."id"
-  JOIN "verified_privilege"
-    ON "delegation"."unit_id" = "verified_privilege"."unit_id"
-    AND "delegation"."truster_id" = "verified_privilege"."member_id"
-  WHERE "member"."active" AND "verified_privilege"."voting_right";
+  JOIN "privilege"
+    ON "delegation"."unit_id" = "privilege"."unit_id"
+    AND "delegation"."truster_id" = "privilege"."member_id"
+  WHERE "member"."active" AND "privilege"."voting_right";
 
 COMMENT ON VIEW "unit_delegation" IS 'Unit delegations where trusters are active and have voting right';
 
@@ -3383,10 +3346,10 @@ CREATE VIEW "area_delegation" AS
     OR "delegation"."area_id" = "area"."id"
   JOIN "member"
     ON "delegation"."truster_id" = "member"."id"
-  JOIN "verified_privilege"
-    ON "area"."unit_id" = "verified_privilege"."unit_id"
-    AND "delegation"."truster_id" = "verified_privilege"."member_id"
-  WHERE "member"."active" AND "verified_privilege"."voting_right"
+  JOIN "privilege"
+    ON "area"."unit_id" = "privilege"."unit_id"
+    AND "delegation"."truster_id" = "privilege"."member_id"
+  WHERE "member"."active" AND "privilege"."voting_right"
   ORDER BY
     "area"."id",
     "delegation"."truster_id",
@@ -3411,10 +3374,10 @@ CREATE VIEW "issue_delegation" AS
     OR "delegation"."issue_id" = "issue"."id"
   JOIN "member"
     ON "delegation"."truster_id" = "member"."id"
-  JOIN "verified_privilege"
-    ON "area"."unit_id" = "verified_privilege"."unit_id"
-    AND "delegation"."truster_id" = "verified_privilege"."member_id"
-  WHERE "member"."active" AND "verified_privilege"."voting_right"
+  JOIN "privilege"
+    ON "area"."unit_id" = "privilege"."unit_id"
+    AND "delegation"."truster_id" = "privilege"."member_id"
+  WHERE "member"."active" AND "privilege"."voting_right"
   ORDER BY
     "issue"."id",
     "delegation"."truster_id",
@@ -3433,10 +3396,10 @@ CREATE VIEW "unit_member" AS
   SELECT
     "unit"."id"   AS "unit_id",
     "member"."id" AS "member_id"
-  FROM "verified_privilege"
-  JOIN "unit"   ON "unit_id"     = "verified_privilege"."unit_id"
-  JOIN "member" ON "member"."id" = "verified_privilege"."member_id"
-  WHERE "verified_privilege"."voting_right" AND "member"."active";
+  FROM "privilege"
+  JOIN "unit"   ON "unit_id"     = "privilege"."unit_id"
+  JOIN "member" ON "member"."id" = "privilege"."member_id"
+  WHERE "privilege"."voting_right" AND "member"."active";
 
 COMMENT ON VIEW "unit_member" IS 'Active members with voting right in a unit';
 
@@ -3697,10 +3660,10 @@ CREATE VIEW "event_for_notification" AS
   FROM "member" CROSS JOIN "event"
   JOIN "issue" ON "issue"."id" = "event"."issue_id"
   JOIN "area" ON "area"."id" = "issue"."area_id"
-  LEFT JOIN "verified_privilege" ON
-    "verified_privilege"."member_id" = "member"."id" AND
-    "verified_privilege"."unit_id" = "area"."unit_id" AND
-    "verified_privilege"."voting_right" = TRUE
+  LEFT JOIN "privilege" ON
+    "privilege"."member_id" = "member"."id" AND
+    "privilege"."unit_id" = "area"."unit_id" AND
+    "privilege"."voting_right" = TRUE
   LEFT JOIN "subscription" ON
     "subscription"."member_id" = "member"."id" AND
     "subscription"."unit_id" = "area"."unit_id"
@@ -3713,9 +3676,7 @@ CREATE VIEW "event_for_notification" AS
   LEFT JOIN "supporter" ON
     "supporter"."member_id" = "member"."id" AND
     "supporter"."initiative_id" = "event"."initiative_id"
-  WHERE (
-    "verified_privilege"."member_id" NOTNULL OR
-    "subscription"."member_id" NOTNULL )
+  WHERE ("privilege"."member_id" NOTNULL OR "subscription"."member_id" NOTNULL)
   AND ("ignored_area"."member_id" ISNULL OR "interest"."member_id" NOTNULL)
   AND (
     "event"."event" = 'issue_state_changed'::"event_type" OR
@@ -3821,10 +3782,10 @@ CREATE FUNCTION "featured_initiative"
             LEFT JOIN "supporter" AS "self_support" ON
               "self_support"."initiative_id" = "initiative"."id" AND
               "self_support"."member_id" = "recipient_id_p"
-            LEFT JOIN "verified_privilege" ON
-              "verified_privilege"."member_id" = "recipient_id_p" AND
-              "verified_privilege"."unit_id" = "area"."unit_id" AND
-              "verified_privilege"."voting_right" = TRUE
+            LEFT JOIN "privilege" ON
+              "privilege"."member_id" = "recipient_id_p" AND
+              "privilege"."unit_id" = "area"."unit_id" AND
+              "privilege"."voting_right" = TRUE
             LEFT JOIN "subscription" ON
               "subscription"."member_id" = "recipient_id_p" AND
               "subscription"."unit_id" = "area"."unit_id"
@@ -3838,7 +3799,7 @@ CREATE FUNCTION "featured_initiative"
             AND "self_support"."member_id" ISNULL
             AND NOT "initiative_id_ary" @> ARRAY["initiative"."id"]
             AND (
-              "verified_privilege"."member_id" NOTNULL OR
+              "privilege"."member_id" NOTNULL OR
               "subscription"."member_id" NOTNULL )
             AND "ignored_initiative"."member_id" ISNULL
             AND NOT EXISTS (
@@ -4064,10 +4025,10 @@ CREATE VIEW "newsletter_to_send" AS
     "newsletter"."id" AS "newsletter_id",
     "newsletter"."published"
   FROM "newsletter" CROSS JOIN "member_eligible_to_be_notified" AS "member"
-  LEFT JOIN "verified_privilege" ON
-    "verified_privilege"."member_id" = "member"."id" AND
-    "verified_privilege"."unit_id" = "newsletter"."unit_id" AND
-    "verified_privilege"."voting_right" = TRUE
+  LEFT JOIN "privilege" ON
+    "privilege"."member_id" = "member"."id" AND
+    "privilege"."unit_id" = "newsletter"."unit_id" AND
+    "privilege"."voting_right" = TRUE
   LEFT JOIN "subscription" ON
     "subscription"."member_id" = "member"."id" AND
     "subscription"."unit_id" = "newsletter"."unit_id"
@@ -4078,7 +4039,7 @@ CREATE VIEW "newsletter_to_send" AS
     "newsletter"."include_all_members" = TRUE )
   AND (
     "newsletter"."unit_id" ISNULL OR
-    "verified_privilege"."member_id" NOTNULL OR
+    "privilege"."member_id" NOTNULL OR
     "subscription"."member_id" NOTNULL );
 
 COMMENT ON VIEW "newsletter_to_send" IS 'List of "newsletter_id"s for each member that are due to be sent out';
@@ -4269,11 +4230,11 @@ CREATE FUNCTION "delegation_chain"
         END IF;
         "output_row"."scope_in" := "output_row"."scope_out";
         "output_row"."member_valid" := EXISTS (
-          SELECT NULL FROM "member" JOIN "verified_privilege"
-          ON "verified_privilege"."member_id" = "member"."id"
-          AND "verified_privilege"."unit_id" = "unit_id_v"
+          SELECT NULL FROM "member" JOIN "privilege"
+          ON "privilege"."member_id" = "member"."id"
+          AND "privilege"."unit_id" = "unit_id_v"
           WHERE "id" = "output_row"."member_id"
-          AND "member"."active" AND "verified_privilege"."voting_right"
+          AND "member"."active" AND "privilege"."voting_right"
         );
         "simulate_here_v" := (
           "simulate_v" AND
@@ -4978,11 +4939,11 @@ CREATE FUNCTION "take_snapshot"
           JOIN "area" ON "issue"."area_id" = "area"."id"
           JOIN "interest" ON "issue"."id" = "interest"."issue_id"
           JOIN "member" ON "interest"."member_id" = "member"."id"
-          JOIN "verified_privilege"
-            ON "verified_privilege"."unit_id" = "area"."unit_id"
-            AND "verified_privilege"."member_id" = "member"."id"
+          JOIN "privilege"
+            ON "privilege"."unit_id" = "area"."unit_id"
+            AND "privilege"."member_id" = "member"."id"
           WHERE "issue"."id" = "issue_id_v"
-          AND "member"."active" AND "verified_privilege"."voting_right";
+          AND "member"."active" AND "privilege"."voting_right";
         FOR "member_id_v" IN
           SELECT "member_id" FROM "direct_interest_snapshot"
           WHERE "snapshot_id" = "snapshot_id_v"
@@ -5337,13 +5298,13 @@ CREATE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
             "direct_voter"."member_id"
           FROM "direct_voter"
           JOIN "member" ON "direct_voter"."member_id" = "member"."id"
-          LEFT JOIN "verified_privilege"
-          ON "verified_privilege"."unit_id" = "unit_id_v"
-          AND "verified_privilege"."member_id" = "direct_voter"."member_id"
+          LEFT JOIN "privilege"
+          ON "privilege"."unit_id" = "unit_id_v"
+          AND "privilege"."member_id" = "direct_voter"."member_id"
           WHERE "direct_voter"."issue_id" = "issue_id_p" AND (
             "member"."active" = FALSE OR
-            "verified_privilege"."voting_right" ISNULL OR
-            "verified_privilege"."voting_right" = FALSE
+            "privilege"."voting_right" ISNULL OR
+            "privilege"."voting_right" = FALSE
           )
         ) AS "subquery"
         WHERE "direct_voter"."issue_id" = "issue_id_p"
