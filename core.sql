@@ -248,7 +248,7 @@ COMMENT ON TABLE "member_settings" IS 'Stores a JSON document for each member co
 
 CREATE TABLE "member_useterms" (
         "member_id"             INT4            PRIMARY KEY REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "accepted"              TIMESTAMPTZ     NOT NULL,
+        "accepted"              TIMESTAMPTZ     NOT NULL DEFAULT now(),
         "contract_identifier"   TEXT            NOT NULL );
 
 COMMENT ON TABLE "member_useterms" IS 'Keeps record of accepted terms of use; may contain multiple rows per member';
