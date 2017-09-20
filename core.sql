@@ -247,7 +247,8 @@ COMMENT ON TABLE "member_settings" IS 'Stores a JSON document for each member co
 
 
 CREATE TABLE "member_useterms" (
-        "member_id"             INT4            PRIMARY KEY REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "id"                    SERIAL8         PRIMARY KEY,
+        "member_id"             INT4            NOT NULL REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "accepted"              TIMESTAMPTZ     NOT NULL DEFAULT now(),
         "contract_identifier"   TEXT            NOT NULL );
 
