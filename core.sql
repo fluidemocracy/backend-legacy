@@ -212,31 +212,34 @@ CREATE TABLE "verification" (
         "requested"             TIMESTAMPTZ,
         "request_origin"        JSONB,
         "request_data"          JSONB,
+        "requesting_member_id"  INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "verifying_member_id"   INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "verified_member_id"    INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "verified"              TIMESTAMPTZ,
-        "verification_origin"   JSONB,
         "verification_data"     JSONB,
         "denied"                TIMESTAMPTZ,
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "comment"               TEXT,
         CONSTRAINT "verified_and_denied_conflict" CHECK (
           "verified" ISNULL OR "denied" ISNULL ) );
 CREATE INDEX "verification_requested_idx" ON "verification" ("requested");
 CREATE INDEX "verification_open_request_idx" ON "verification" ("requested") WHERE "verified" ISNULL AND "denied" ISNULL;
+CREATE INDEX "verification_requesting_member_id_idx" ON "verification" ("requesting_member_id");
+CREATE INDEX "verification_verified_member_id_idx" ON "verification" ("verified_member_id");
 CREATE INDEX "verification_verified_idx" ON "verification" ("verified");
 CREATE INDEX "verification_denied_idx" ON "verification" ("denied");
-CREATE INDEX "verification_member_id_idx" ON "verification" ("member_id");
 
 COMMENT ON TABLE "verification" IS 'Request to verify a participant';
 
-COMMENT ON COLUMN "verification"."requested" IS 'Timestamp when request for verification has been submitted';
-COMMENT ON COLUMN "verification"."request_origin" IS 'JSON data containing information about the origin of the request (e.g. IP address or hostname)';
-COMMENT ON COLUMN "verification"."request_data" IS 'JSON data containing information about the entity to be verified (e.g. real name, address, etc.)';
-COMMENT ON COLUMN "verification"."verified" IS 'Timestamp when request for verification has been accepted by authority';
-COMMENT ON COLUMN "verification"."verification_origin" IS 'JSON data containing information about the authority or operator who accepted or denied the request';
-COMMENT ON COLUMN "verification"."verification_data" IS 'JSON data containing additional verified data, but all public information shall be copied to "member"."identification", "member"."verification" and/or "member"."name" if applicable for setup';
-COMMENT ON COLUMN "verification"."denied" IS 'Timestamp when request for verification has been denied by authority';
-COMMENT ON COLUMN "verification"."member_id" IS 'Timestamp when request for verification has been denied by authority';
-COMMENT ON COLUMN "verification"."comment" IS 'Administrative comment';
+COMMENT ON COLUMN "verification"."requested"            IS 'Timestamp when request for verification has been submitted';
+COMMENT ON COLUMN "verification"."request_origin"       IS 'JSON data containing information about the origin of the request (e.g. IP address or hostname)';
+COMMENT ON COLUMN "verification"."request_data"         IS 'JSON data containing information about the entity to be verified (e.g. real name, address, etc.)';
+COMMENT ON COLUMN "verification"."requesting_member_id" IS 'Member who requested verification';
+COMMENT ON COLUMN "verification"."verifying_member_id"  IS 'Member who processed the verification request (i.e. who accepted or denied the request)';
+COMMENT ON COLUMN "verification"."verified_member_id"   IS 'Member entry containing verified information (not necessarily equal to "requesting_member_id" but may be merged with requesting member later)';
+COMMENT ON COLUMN "verification"."verified"             IS 'Timestamp when request for verification has been accepted by authority';
+COMMENT ON COLUMN "verification"."verification_data"    IS 'JSON data containing additional verified data or information about the authority or operator who accepted or denied the request, but all public information shall be copied to "member"."identification", "member"."verification" and/or "member"."name" if applicable for setup';
+COMMENT ON COLUMN "verification"."denied"               IS 'Timestamp when request for verification has been denied by authority';
+COMMENT ON COLUMN "verification"."comment"              IS 'Administrative comment';
 
 
 CREATE TABLE "member_settings" (
