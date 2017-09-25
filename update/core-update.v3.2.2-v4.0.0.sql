@@ -1200,12 +1200,16 @@ CREATE OR REPLACE FUNCTION "write_event_initiative_revoked_trigger"()
       "draft_id_v" "draft"."id"%TYPE;
     BEGIN
       IF OLD."revoked" ISNULL AND NEW."revoked" NOTNULL THEN
+        -- NOTE: lock for primary key update to avoid new drafts
+        SELECT NULL FROM "initiative" WHERE "id" = NEW."id" FOR UPDATE;
         SELECT * INTO "issue_row" FROM "issue"
           WHERE "id" = NEW."issue_id" FOR SHARE;
         SELECT * INTO "area_row" FROM "area"
           WHERE "id" = "issue_row"."area_id" FOR SHARE;
+        -- NOTE: FOR SHARE cannot be used with DISTINCT in view "current_draft"
+        SELECT NULL FROM "draft" WHERE "initiative_id" = NEW."id" FOR SHARE;
         SELECT "id" INTO "draft_id_v" FROM "current_draft"
-          WHERE "initiative_id" = NEW."id" FOR SHARE;
+          WHERE "initiative_id" = NEW."id";
         INSERT INTO "event" (
             "event", "member_id",
             "unit_id", "area_id", "policy_id", "issue_id", "state",
