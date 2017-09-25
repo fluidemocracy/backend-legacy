@@ -4942,7 +4942,7 @@ CREATE FUNCTION "take_snapshot"
         SELECT "area_id" INTO "area_id_v"
           FROM "issue" WHERE "id" = "issue_id_p";
       END IF;
-      SELECT "unit_id" INTO "unit_id_v" FROM "area" WHERE "id" = "area_id_p";
+      SELECT "unit_id" INTO "unit_id_v" FROM "area" WHERE "id" = "area_id_v";
       INSERT INTO "snapshot" ("area_id", "issue_id")
         VALUES ("area_id_v", "issue_id_p")
         RETURNING "id" INTO "snapshot_id_v";
