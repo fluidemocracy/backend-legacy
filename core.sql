@@ -6061,11 +6061,14 @@ CREATE FUNCTION "check_issue"
         "persist"."snapshot_created" = TRUE;
         IF "persist"."phase_finished" THEN
           IF "persist"."state" = 'admission' THEN
-            UPDATE "issue" SET "admission_snapshot_id" = "latest_snapshot_id";
+            UPDATE "issue" SET "admission_snapshot_id" = "latest_snapshot_id"
+              WHERE "id" = "issue_id_p";
           ELSIF "persist"."state" = 'discussion' THEN
-            UPDATE "issue" SET "half_freeze_snapshot_id" = "latest_snapshot_id";
+            UPDATE "issue" SET "half_freeze_snapshot_id" = "latest_snapshot_id"
+              WHERE "id" = "issue_id_p";
           ELSIF "persist"."state" = 'verification' THEN
-            UPDATE "issue" SET "full_freeze_snapshot_id" = "latest_snapshot_id";
+            UPDATE "issue" SET "full_freeze_snapshot_id" = "latest_snapshot_id"
+              WHERE "id" = "issue_id_p";
             SELECT * INTO "issue_row" FROM "issue" WHERE "id" = "issue_id_p";
             SELECT * INTO "policy_row" FROM "policy"
               WHERE "id" = "issue_row"."policy_id";
