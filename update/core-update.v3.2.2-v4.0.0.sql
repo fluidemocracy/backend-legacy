@@ -981,7 +981,7 @@ ALTER TABLE "event" ADD CONSTRAINT "constr_for_suggestion_rated" CHECK (
 ALTER TABLE "event" ADD CONSTRAINT "constr_for_delegation" CHECK (
           "event" != 'delegation' OR (
             "member_id"       NOTNULL AND
-            ("other_member_id" NOTNULL) OR ("boolean_value" = FALSE) AND
+            (("other_member_id" ISNULL) OR ("boolean_value" = TRUE)) AND
             "scope"           NOTNULL AND
             "unit_id"         NOTNULL AND
             ("area_id"  NOTNULL) = ("scope" != 'unit'::"delegation_scope") AND
