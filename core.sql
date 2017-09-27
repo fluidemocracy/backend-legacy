@@ -6083,7 +6083,7 @@ CREATE FUNCTION "check_issue"
             LOOP
               IF
                 "initiative_row"."polling" OR (
-                  "initiative_row"."satisfied_supporter_count" > 
+                  "initiative_row"."satisfied_supporter_count" >=
                   "policy_row"."initiative_quorum" AND
                   "initiative_row"."satisfied_supporter_count" *
                   "policy_row"."initiative_quorum_den" >=
