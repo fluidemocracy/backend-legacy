@@ -2531,21 +2531,6 @@ CREATE OR REPLACE FUNCTION "calculate_member_counts"()
 COMMENT ON FUNCTION "calculate_member_counts"() IS 'Updates "member_count" table and "member_count" column of table "area" by materializing data from views "member_count_view" and "unit_member_count"';
 
 
-CREATE FUNCTION "calculate_area_quorum"()
-  RETURNS VOID
-  LANGUAGE 'plpgsql' VOLATILE AS $$
-    BEGIN
-      PERFORM "dont_require_transaction_isolation"();
-      UPDATE "area" SET "issue_quorum" = "view"."issue_quorum"
-        FROM "area_quorum" AS "view"
-        WHERE "view"."area_id" = "area"."id";
-      RETURN;
-    END;
-  $$;
-
-COMMENT ON FUNCTION "calculate_area_quorum"() IS 'Calculate column "issue_quorum" in table "area" from view "area_quorum"';
-
-
 DROP VIEW "remaining_harmonic_initiative_weight_summands";
 DROP VIEW "remaining_harmonic_supporter_weight";
 
