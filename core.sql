@@ -769,6 +769,8 @@ CREATE TABLE "issue" (
         "full_freeze_snapshot_id" INT8,
         FOREIGN KEY ("id", "full_freeze_snapshot_id")
           REFERENCES "snapshot" ("issue_id", "id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "issue_quorum"          INT4,
+        "initiative_quorum"     INT4,
         "population"            INT4,
         "voter_count"           INT4,
         "status_quo_schulze_rank" INT4,
@@ -841,6 +843,8 @@ COMMENT ON COLUMN "issue"."latest_snapshot_id"      IS 'Snapshot id of most rece
 COMMENT ON COLUMN "issue"."admission_snapshot_id"   IS 'Snapshot id when issue as accepted or canceled in admission phase';
 COMMENT ON COLUMN "issue"."half_freeze_snapshot_id" IS 'Snapshot id at end of discussion phase';
 COMMENT ON COLUMN "issue"."full_freeze_snapshot_id" IS 'Snapshot id at end of verification phase';
+COMMENT ON COLUMN "issue"."issue_quorum"            IS 'Calculated number of supporters needed by an initiative of the issue to be "accepted", i.e. pass from ''admission'' to ''discussion'' state';
+COMMENT ON COLUMN "issue"."initiative_quorum"       IS 'Calculated number of satisfied supporters to be reached by an initiative to be "admitted" for voting';
 COMMENT ON COLUMN "issue"."population"              IS 'Count of members in "snapshot_population" table with "snapshot_id" equal to "issue"."latest_snapshot_id"';
 COMMENT ON COLUMN "issue"."voter_count"             IS 'Total number of direct and delegating voters; This value is related to the final voting, while "population" is related to snapshots before the final voting';
 COMMENT ON COLUMN "issue"."status_quo_schulze_rank" IS 'Schulze rank of status quo, as calculated by "calculate_ranks" function';
@@ -3324,6 +3328,30 @@ CREATE VIEW "area_quorum" AS
 COMMENT ON VIEW "area_quorum" IS 'Area-based quorum considering number of open (accepted) issues';
 
 
+CREATE VIEW "issue_quorum" AS
+  SELECT DISTINCT ON ("issue_id")
+    "issue"."id" AS "issue_id",
+    "subquery"."issue_quorum"
+  FROM "issue"
+  CROSS JOIN LATERAL (
+    SELECT "area_quorum"."issue_quorum"
+    FROM "area_quorum" WHERE "area_quorum"."area_id" = "issue"."area_id"
+    UNION ALL
+    SELECT "policy"."issue_quorum"
+    FROM "policy" WHERE "policy"."id" = "issue"."policy_id"
+    UNION ALL
+    SELECT
+      ceil(
+        ("issue"."population"::INT8 * "policy"."issue_quorum_num"::INT8) /
+        "policy"."issue_quorum_den"::FLOAT8
+      )::INT4
+    FROM "policy" WHERE "policy"."id" = "issue"."policy_id"
+  ) AS "subquery"
+  ORDER BY "issue_id", "issue_quorum" DESC;
+
+COMMENT ON VIEW "issue_quorum" IS 'Effective quorum for issue admission';
+
+
 CREATE VIEW "area_with_unaccepted_issues" AS
   SELECT DISTINCT ON ("area"."id") "area".*
   FROM "area" JOIN "issue" ON "area"."id" = "issue"."area_id"
@@ -5122,10 +5150,26 @@ CREATE FUNCTION "finish_snapshot"
       UPDATE "issue" SET
         "calculated" = "snapshot"."calculated",
         "latest_snapshot_id" = "snapshot_id_v",
-        "population" = "snapshot"."population"
-        FROM "snapshot"
+        "population" = "snapshot"."population",
+        "initiative_quorum" = CASE WHEN
+          "policy"."initiative_quorum" > ceil(
+            ( "issue"."population"::INT8 *
+              "policy"."initiative_quorum_num"::INT8 ) /
+            "policy"."initiative_quorum_den"::FLOAT8
+          )::INT4
+        THEN
+          "policy"."initiative_quorum"
+        ELSE
+          ceil(
+            ( "issue"."population"::INT8 *
+              "policy"."initiative_quorum_num"::INT8 ) /
+            "policy"."initiative_quorum_den"::FLOAT8
+          )::INT4
+        END
+        FROM "snapshot", "policy"
         WHERE "issue"."id" = "issue_id_p"
-        AND "snapshot"."id" = "snapshot_id_v";
+        AND "snapshot"."id" = "snapshot_id_v"
+        AND "policy"."id" = "issue"."policy_id";
       UPDATE "initiative" SET
         "supporter_count" = (
           SELECT coalesce(sum("di"."weight"), 0)
@@ -5944,8 +5988,11 @@ CREATE FUNCTION "issue_admission"
         "admission_snapshot_id" = "latest_snapshot_id",
         "state"                 = 'discussion',
         "accepted"              = now(),
-        "phase_finished"        = NULL
-        WHERE "id" = "issue_id_v";
+        "phase_finished"        = NULL,
+        "issue_quorum"          = "issue_quorum"."issue_quorum"
+        FROM "issue_quorum"
+        WHERE "id" = "issue_id_v"
+        AND "issue_quorum"."issue_id" = "issue_id_v";
       RETURN TRUE;
     END;
   $$;
@@ -6046,6 +6093,11 @@ CREATE FUNCTION "check_issue"
         IF "persist"."state" != 'admission' THEN
           PERFORM "take_snapshot"("issue_id_p");
           PERFORM "finish_snapshot"("issue_id_p");
+        ELSE
+          UPDATE "issue" SET "issue_quorum" = "issue_quorum"."issue_quorum"
+            FROM "issue_quorum"
+            WHERE "id" = "issue_id_p"
+            AND "issue_quorum"."issue_id" = "issue_id_p";
         END IF;
         "persist"."snapshot_created" = TRUE;
         IF "persist"."phase_finished" THEN
@@ -6059,21 +6111,15 @@ CREATE FUNCTION "check_issue"
             UPDATE "issue" SET "full_freeze_snapshot_id" = "latest_snapshot_id"
               WHERE "id" = "issue_id_p";
             SELECT * INTO "issue_row" FROM "issue" WHERE "id" = "issue_id_p";
-            SELECT * INTO "policy_row" FROM "policy"
-              WHERE "id" = "issue_row"."policy_id";
             FOR "initiative_row" IN
               SELECT * FROM "initiative"
               WHERE "issue_id" = "issue_id_p" AND "revoked" ISNULL
               FOR UPDATE
             LOOP
               IF
-                "initiative_row"."polling" OR (
-                  "initiative_row"."satisfied_supporter_count" >=
-                  "policy_row"."initiative_quorum" AND
-                  "initiative_row"."satisfied_supporter_count" *
-                  "policy_row"."initiative_quorum_den" >=
-                  "issue_row"."population" * "policy_row"."initiative_quorum_num"
-                )
+                "initiative_row"."polling" OR
+                "initiative_row"."satisfied_supporter_count" >=
+                "issue_row"."initiative_quorum"
               THEN
                 UPDATE "initiative" SET "admitted" = TRUE
                   WHERE "id" = "initiative_row"."id";
