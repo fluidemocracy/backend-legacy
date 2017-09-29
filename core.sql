@@ -6,7 +6,7 @@ BEGIN;
 CREATE EXTENSION IF NOT EXISTS latlon;  -- load pgLatLon extenstion
 
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('4.0-dev', 4, 0, -1))
+  SELECT * FROM (VALUES ('4.0.0', 4, 0, 0))
   AS "subquery"("string", "major", "minor", "revision");
 
 
