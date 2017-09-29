@@ -2140,7 +2140,7 @@ CREATE VIEW "unit_member" AS
     "unit"."id"   AS "unit_id",
     "member"."id" AS "member_id"
   FROM "privilege"
-  JOIN "unit"   ON "unit_id"     = "privilege"."unit_id"
+  JOIN "unit"   ON "unit"."id"   = "privilege"."unit_id"
   JOIN "member" ON "member"."id" = "privilege"."member_id"
   WHERE "privilege"."voting_right" AND "member"."active";
 
