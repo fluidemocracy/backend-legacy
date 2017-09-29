@@ -579,6 +579,29 @@ COMMENT ON COLUMN "issue"."initiative_quorum"       IS 'Calculated number of sat
 COMMENT ON COLUMN "issue"."population"              IS 'Count of members in "snapshot_population" table with "snapshot_id" equal to "issue"."latest_snapshot_id"';
 
 
+ALTER TABLE "issue" DISABLE TRIGGER USER;  -- NOTE: required to modify table later
+
+UPDATE "issue" SET
+  "issue_quorum" = ceil(
+    ("subquery"."population"::INT8 * "policy"."issue_quorum_num"::INT8) /
+    "policy"."issue_quorum_den"::FLOAT8
+  ),
+  "initiative_quorum" = ceil(
+    ("issue"."population"::INT8 * "policy"."initiative_quorum_num"::INT8) /
+    "policy"."initiative_quorum_den"::FLOAT8
+  )
+  FROM (
+    SELECT "issue_id", sum("weight") AS "population"
+    FROM "direct_population_snapshot"
+    WHERE "event" = 'end_of_admission'
+    GROUP BY "issue_id"
+  ) AS "subquery", "policy"
+  WHERE "issue"."id" = "subquery"."issue_id"
+  AND "issue"."policy_id" = "policy"."id";
+
+ALTER TABLE "issue" ENABLE TRIGGER USER;
+
+
 ALTER TABLE "snapshot" ADD FOREIGN KEY ("issue_id") REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 
