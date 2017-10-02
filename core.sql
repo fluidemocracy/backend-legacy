@@ -6,7 +6,7 @@ BEGIN;
 CREATE EXTENSION IF NOT EXISTS latlon;  -- load pgLatLon extenstion
 
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('4.0.0', 4, 0, 0))
+  SELECT * FROM (VALUES ('4.0-dev', 4, 0, -1))
   AS "subquery"("string", "major", "minor", "revision");
 
 
@@ -3633,7 +3633,7 @@ CREATE VIEW "expired_token" AS
   SELECT * FROM "token" WHERE now() > "expiry" AND NOT (
     "token_type" = 'authorization' AND "used" AND EXISTS (
       SELECT NULL FROM "token" AS "other"
-      WHERE "other"."authorization_token_id" = "id" ) );
+      WHERE "other"."authorization_token_id" = "token"."id" ) );
 
 CREATE RULE "delete" AS ON DELETE TO "expired_token" DO INSTEAD
   DELETE FROM "token" WHERE "id" = OLD."id";
