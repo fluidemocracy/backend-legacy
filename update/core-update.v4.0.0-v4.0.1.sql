@@ -13,7 +13,7 @@ CREATE OR REPLACE VIEW "expired_token" AS
 ALTER TABLE "system_application" RENAME COLUMN "discovery_baseurl" TO "base_url";
 ALTER TABLE "system_application" ADD COLUMN "manifest_url" TEXT;
 
-COMMENT ON COLUMN "system_application"."base_url"     IS 'Base URL for users; NULL for hidden application';
-COMMENT ON COLUMN "system_application"."manifest_url" IS 'URL referring to a manifest that can be used for application (type/version) discovery; NULL for hidden application';
+COMMENT ON COLUMN "system_application"."base_url"     IS 'Base URL for users';
+COMMENT ON COLUMN "system_application"."manifest_url" IS 'URL referring to a manifest that can be used for application (type/version) discovery';
 
 COMMIT;
