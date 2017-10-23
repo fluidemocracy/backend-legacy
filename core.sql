@@ -382,7 +382,8 @@ COMMENT ON TYPE "authflow" IS 'OAuth 2.0 flows: ''code'' = Authorization Code fl
 CREATE TABLE "system_application" (
         "id"                    SERIAL4         PRIMARY KEY,
         "name"                  TEXT            NOT NULL,
-        "discovery_baseurl"     TEXT,
+        "base_url"              TEXT,
+        "manifest_url"          TEXT,
         "client_id"             TEXT            NOT NULL UNIQUE,
         "default_redirect_uri"  TEXT            NOT NULL,
         "cert_common_name"      TEXT,
@@ -395,7 +396,8 @@ CREATE TABLE "system_application" (
 COMMENT ON TABLE "system_application" IS 'OAuth 2.0 clients that are registered by the system administrator';
 
 COMMENT ON COLUMN "system_application"."name"              IS 'Human readable name of application';
-COMMENT ON COLUMN "system_application"."discovery_baseurl" IS 'Base URL for application discovery; NULL for hidden application';
+COMMENT ON COLUMN "system_application"."base_url"          IS 'Base URL for users; NULL for hidden application';
+COMMENT ON COLUMN "system_application"."manifest_url"      IS 'URL referring to a manifest that can be used for application (type/version) discovery; NULL for hidden application';
 COMMENT ON COLUMN "system_application"."client_id"         IS 'OAuth 2.0 "client_id"';
 COMMENT ON COLUMN "system_application"."cert_common_name"  IS 'Value for CN field of TLS client certificate';
 COMMENT ON COLUMN "system_application"."client_cred_scope" IS 'Space-separated list of scopes; If set, Client Credentials Grant is allowed; value determines scope';
