@@ -4,6 +4,18 @@ CREATE OR REPLACE VIEW "liquid_feedback_version" AS
   SELECT * FROM (VALUES ('4.0.1', 4, 0, 1))
   AS "subquery"("string", "major", "minor", "revision");
 
+ALTER TABLE "member" ADD COLUMN "role" BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE TABLE "agent" (
+        PRIMARY KEY ("controlled_id", "controller_id"),
+        "controlled_id"         INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "controller_id"         INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        CONSTRAINT "controlled_id_and_controller_id_differ" CHECK (
+            "controlled_id" != "controller_id" ) );
+CREATE INDEX "agent_controller_id_idx" ON "agent" ("controller_id");
+
+COMMENT ON TABLE "agent" IS 'Privileges for role accounts';
+
 CREATE OR REPLACE VIEW "expired_token" AS
   SELECT * FROM "token" WHERE now() > "expiry" AND NOT (
     "token_type" = 'authorization' AND "used" AND EXISTS (

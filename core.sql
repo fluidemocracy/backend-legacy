@@ -127,6 +127,7 @@ CREATE TABLE "member" (
         "name"                  TEXT            UNIQUE,
         "identification"        TEXT            UNIQUE,
         "authentication"        TEXT,
+        "role"                  BOOLEAN         NOT NULL DEFAULT FALSE,
         "location"              JSONB,
         "text_search_data"      TSVECTOR,
         CONSTRAINT "deleted_requires_locked"
@@ -205,6 +206,17 @@ COMMENT ON TABLE "member_history" IS 'Filled by trigger; keeps information about
 
 COMMENT ON COLUMN "member_history"."id"    IS 'Primary key, which can be used to sort entries correctly (and time warp resistant)';
 COMMENT ON COLUMN "member_history"."until" IS 'Timestamp until the data was valid';
+
+
+CREATE TABLE "agent" (
+        PRIMARY KEY ("controlled_id", "controller_id"),
+        "controlled_id"         INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "controller_id"         INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        CONSTRAINT "controlled_id_and_controller_id_differ" CHECK (
+            "controlled_id" != "controller_id" ) );
+CREATE INDEX "agent_controller_id_idx" ON "agent" ("controller_id");
+
+COMMENT ON TABLE "agent" IS 'Privileges for role accounts';
 
 
 CREATE TABLE "verification" (
