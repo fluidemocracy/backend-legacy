@@ -6,7 +6,7 @@ BEGIN;
 CREATE EXTENSION IF NOT EXISTS latlon;  -- load pgLatLon extenstion
 
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('4.0-dev', 4, 0, -1))
+  SELECT * FROM (VALUES ('4.1-dev', 4, 1, -1))
   AS "subquery"("string", "major", "minor", "revision");
 
 
@@ -702,7 +702,7 @@ COMMENT ON COLUMN "area"."location"           IS 'Geographic location on earth a
 
 CREATE TABLE "ignored_area" (
         PRIMARY KEY ("member_id", "area_id"),
-        "member_id"             INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "area_id"               INT4            REFERENCES "area" ("id") ON DELETE CASCADE ON UPDATE CASCADE );
 CREATE INDEX "ignored_area_area_id_idx" ON "ignored_area" ("area_id");
 

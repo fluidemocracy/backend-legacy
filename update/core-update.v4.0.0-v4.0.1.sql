@@ -1,7 +1,7 @@
 BEGIN;
 
 CREATE OR REPLACE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('4.0.1', 4, 0, 1))
+  SELECT * FROM (VALUES ('4.0.1-dev', 4, 0, -1))
   AS "subquery"("string", "major", "minor", "revision");
 
 ALTER TABLE "member" ADD COLUMN "role" BOOLEAN NOT NULL DEFAULT FALSE;
@@ -15,6 +15,9 @@ CREATE TABLE "agent" (
 CREATE INDEX "agent_controller_id_idx" ON "agent" ("controller_id");
 
 COMMENT ON TABLE "agent" IS 'Privileges for role accounts';
+
+ALTER TABLE "ignored_area" DROP CONSTRAINT "ignored_area_member_id_fkey";
+ALTER TABLE "ignored_area" ADD FOREIGN KEY ("member_id") REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 CREATE OR REPLACE VIEW "expired_token" AS
   SELECT * FROM "token" WHERE now() > "expiry" AND NOT (
