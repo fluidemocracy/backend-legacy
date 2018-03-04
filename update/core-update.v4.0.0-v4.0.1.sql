@@ -10,11 +10,14 @@ CREATE TABLE "agent" (
         PRIMARY KEY ("controlled_id", "controller_id"),
         "controlled_id"         INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "controller_id"         INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "accepted"              BOOLEAN,
         CONSTRAINT "controlled_id_and_controller_id_differ" CHECK (
             "controlled_id" != "controller_id" ) );
 CREATE INDEX "agent_controller_id_idx" ON "agent" ("controller_id");
 
 COMMENT ON TABLE "agent" IS 'Privileges for role accounts';
+
+COMMENT ON COLUMN "agent"."accepted" IS 'If "accepted" is NULL, then the member was invited to be an agent, but has not reacted yet. If it is TRUE, the member has accepted the invitation, if it is FALSE, the member has rejected the invitation.';
 
 ALTER TABLE "session" ADD COLUMN "real_member_id" INT4 REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
