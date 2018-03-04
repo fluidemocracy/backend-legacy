@@ -254,6 +254,36 @@ COMMENT ON COLUMN "verification"."denied"               IS 'Timestamp when reque
 COMMENT ON COLUMN "verification"."comment"              IS 'Administrative comment';
 
 
+-- TODO: merge tables "verification" and "role_verification"
+
+CREATE TABLE "role_verification" (
+        "id"                    SERIAL8         PRIMARY KEY,
+        "requested"             TIMESTAMPTZ,
+        "request_origin"        JSONB,
+        "request_data"          JSONB,
+        "requesting_member_id"  INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "requesting_real_member_id"  INT4       REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "verifying_member_id"   INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "verified_member_id"    INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "verified"              TIMESTAMPTZ,
+        "verification_data"     JSONB,
+        "denied"                TIMESTAMPTZ,
+        "comment"               TEXT,
+        CONSTRAINT "verified_and_denied_conflict" CHECK (
+          "verified" ISNULL OR "denied" ISNULL ) );
+CREATE INDEX "role_verification_requested_idx" ON "role_verification" ("requested");
+CREATE INDEX "role_verification_open_request_idx" ON "role_verification" ("requested") WHERE "verified" ISNULL AND "denied" ISNULL;
+CREATE INDEX "role_verification_requesting_member_id_idx" ON "role_verification" ("requesting_member_id");
+CREATE INDEX "role_verification_verified_member_id_idx" ON "role_verification" ("verified_member_id");
+CREATE INDEX "role_verification_verified_idx" ON "role_verification" ("verified");
+CREATE INDEX "role_verification_denied_idx" ON "role_verification" ("denied");
+
+COMMENT ON TABLE "role_verification" IS 'Request to verify a role account (see table "verification" for documentation of columns not documented for this table)';
+
+COMMENT ON COLUMN "role_verification"."requesting_member_id" IS 'Member role account to verify';
+COMMENT ON COLUMN "role_verification"."requesting_real_member_id" IS 'Member account of real person who requested verification';
+
+
 CREATE TABLE "member_settings" (
         "member_id"             INT4            PRIMARY KEY REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "settings"              JSONB           NOT NULL CHECK (jsonb_typeof("settings") = 'object') );
@@ -366,6 +396,7 @@ CREATE TABLE "session" (
         "logout_token"          TEXT,
         "expiry"                TIMESTAMPTZ     NOT NULL DEFAULT now() + '24 hours',
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE SET NULL,
+        "real_member_id"        INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "authority"             TEXT,
         "authority_uid"         TEXT,
         "authority_login"       TEXT,
@@ -378,7 +409,8 @@ COMMENT ON TABLE "session" IS 'Sessions, i.e. for a web-frontend or API layer';
 COMMENT ON COLUMN "session"."ident"             IS 'Secret session identifier (i.e. random string)';
 COMMENT ON COLUMN "session"."additional_secret" IS 'Additional field to store a secret, which can be used against CSRF attacks';
 COMMENT ON COLUMN "session"."logout_token"      IS 'Optional token to authorize logout through external component';
-COMMENT ON COLUMN "session"."member_id"         IS 'Reference to member, who is logged in';
+COMMENT ON COLUMN "session"."member_id"         IS 'Reference to member, who is logged in, or role account in use';
+COMMENT ON COLUMN "session"."real_member_id"    IS 'Reference to member, who is really logged in (real person rather than role account)';
 COMMENT ON COLUMN "session"."authority"         IS 'Temporary store for "member"."authority" during member account creation';
 COMMENT ON COLUMN "session"."authority_uid"     IS 'Temporary store for "member"."authority_uid" during member account creation';
 COMMENT ON COLUMN "session"."authority_login"   IS 'Temporary store for "member"."authority_login" during member account creation';
