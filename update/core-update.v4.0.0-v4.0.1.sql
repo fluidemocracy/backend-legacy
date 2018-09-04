@@ -66,4 +66,39 @@ ALTER TABLE "system_application" ADD COLUMN "manifest_url" TEXT;
 COMMENT ON COLUMN "system_application"."base_url"     IS 'Base URL for users';
 COMMENT ON COLUMN "system_application"."manifest_url" IS 'URL referring to a manifest that can be used for application (type/version) discovery';
 
+CREATE OR REPLACE FUNCTION "write_event_initiative_revoked_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "issue_row"  "issue"%ROWTYPE;
+      "area_row"   "area"%ROWTYPE;
+      "draft_id_v" "draft"."id"%TYPE;
+    BEGIN
+      IF OLD."revoked" ISNULL AND NEW."revoked" NOTNULL THEN
+        -- NOTE: lock for primary key update to avoid new drafts
+        PERFORM NULL FROM "initiative" WHERE "id" = NEW."id" FOR UPDATE;
+        SELECT * INTO "issue_row" FROM "issue"
+          WHERE "id" = NEW."issue_id" FOR SHARE;
+        SELECT * INTO "area_row" FROM "area"
+          WHERE "id" = "issue_row"."area_id" FOR SHARE;
+        -- NOTE: FOR SHARE cannot be used with DISTINCT in view "current_draft"
+        PERFORM NULL FROM "draft" WHERE "initiative_id" = NEW."id" FOR SHARE;
+        SELECT "id" INTO "draft_id_v" FROM "current_draft"
+          WHERE "initiative_id" = NEW."id";
+        INSERT INTO "event" (
+            "event", "member_id",
+            "unit_id", "area_id", "policy_id", "issue_id", "state",
+            "initiative_id", "draft_id"
+          ) VALUES (
+            'initiative_revoked', NEW."revoked_by_member_id",
+            "area_row"."unit_id", "issue_row"."area_id",
+            "issue_row"."policy_id",
+            NEW."issue_id", "issue_row"."state",
+            NEW."id", "draft_id_v"
+          );
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
 COMMIT;
