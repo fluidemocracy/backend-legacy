@@ -4,6 +4,10 @@ CREATE OR REPLACE VIEW "liquid_feedback_version" AS
   SELECT * FROM (VALUES ('4.0.1-dev', 4, 0, -1))
   AS "subquery"("string", "major", "minor", "revision");
 
+ALTER TABLE "member" ADD COLUMN "unsubscribe_secret" TEXT;
+
+COMMENT ON COLUMN "member"."unsubscribe_secret" IS 'Secret string to be used for a List-Unsubscribe mail header';
+
 ALTER TABLE "member" ADD COLUMN "role" BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE TABLE "agent" (

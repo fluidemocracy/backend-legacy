@@ -115,6 +115,7 @@ CREATE TABLE "member" (
         "notify_email_secret"          TEXT     UNIQUE,
         "notify_email_secret_expiry"   TIMESTAMPTZ,
         "notify_email_lock_expiry"     TIMESTAMPTZ,
+        "unsubscribe_secret"    TEXT,
         "disable_notifications"    BOOLEAN      NOT NULL DEFAULT FALSE,
         "notification_counter"     INT4         NOT NULL DEFAULT 1,
         "notification_sample_size" INT4         NOT NULL DEFAULT 3,
@@ -179,6 +180,7 @@ COMMENT ON COLUMN "member"."notify_email_unconfirmed"   IS 'Unconfirmed email ad
 COMMENT ON COLUMN "member"."notify_email_secret"        IS 'Secret sent to the address in "notify_email_unconformed"';
 COMMENT ON COLUMN "member"."notify_email_secret_expiry" IS 'Expiry date/time for "notify_email_secret"';
 COMMENT ON COLUMN "member"."notify_email_lock_expiry"   IS 'Date/time until no further email confirmation mails may be sent (abuse protection)';
+COMMENT ON COLUMN "member"."unsubscribe_secret"         IS 'Secret string to be used for a List-Unsubscribe mail header';
 COMMENT ON COLUMN "member"."disable_notifications"    IS 'TRUE if member does not want to receive notifications';
 COMMENT ON COLUMN "member"."notification_counter"     IS 'Sequential number of next scheduled notification message (used as a seed for pseudo-random initiative selection algorithm)';
 COMMENT ON COLUMN "member"."notification_sample_size" IS 'Number of featured initiatives per issue in scheduled notification messages';
