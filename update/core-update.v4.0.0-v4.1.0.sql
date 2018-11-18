@@ -1,7 +1,7 @@
 BEGIN;
 
 CREATE OR REPLACE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('4.0.1-dev', 4, 0, -1))
+  SELECT * FROM (VALUES ('4.1.0', 4, 1, 0))
   AS "subquery"("string", "major", "minor", "revision");
 
 ALTER TABLE "member" ADD COLUMN "unsubscribe_secret" TEXT;
