@@ -6163,7 +6163,8 @@ CREATE FUNCTION "check_issue"
         SELECT "calculated" INTO "last_calculated_v"
           FROM "snapshot" JOIN "snapshot_issue"
           ON "snapshot"."id" = "snapshot_issue"."snapshot_id"
-          WHERE "snapshot_issue"."issue_id" = "issue_id_p";
+          WHERE "snapshot_issue"."issue_id" = "issue_id_p"
+          ORDER BY "snapshot"."id" DESC;
         IF "issue_row"."closed" NOTNULL THEN
           RETURN NULL;
         END IF;
