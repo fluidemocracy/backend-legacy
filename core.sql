@@ -3,7 +3,9 @@
 
 BEGIN;
 
-CREATE EXTENSION IF NOT EXISTS latlon;  -- load pgLatLon extenstion
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+CREATE EXTENSION IF NOT EXISTS latlon;
+CREATE EXTENSION IF NOT EXISTS conflux;
 
 CREATE VIEW "liquid_feedback_version" AS
   SELECT * FROM (VALUES ('4.1.0', 4, 1, 0))
@@ -370,6 +372,7 @@ CREATE TABLE "contact" (
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "other_member_id"       INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "public"                BOOLEAN         NOT NULL DEFAULT FALSE,
+        "following"             BOOLEAN         NOT NULL DEFAULT TRUE,
         CONSTRAINT "cant_save_yourself_as_contact"
           CHECK ("member_id" != "other_member_id") );
 CREATE INDEX "contact_other_member_id_idx" ON "contact" ("other_member_id");
@@ -379,6 +382,7 @@ COMMENT ON TABLE "contact" IS 'Contact lists';
 COMMENT ON COLUMN "contact"."member_id"       IS 'Member having the contact list';
 COMMENT ON COLUMN "contact"."other_member_id" IS 'Member referenced in the contact list';
 COMMENT ON COLUMN "contact"."public"          IS 'TRUE = display contact publically';
+COMMENT ON COLUMN "contact"."following"       IS 'TRUE = actions of contact are shown in personal timeline';
 
 
 CREATE TABLE "ignored_member" (
@@ -1409,6 +1413,46 @@ COMMENT ON COLUMN "vote"."grade"            IS 'Values smaller than zero mean re
 COMMENT ON COLUMN "vote"."first_preference" IS 'Value is automatically set after voting is finished. For positive grades, this value is set to true for the highest (i.e. best) grade.';
 
 
+CREATE TABLE "posting" (
+        "id"                    SERIAL8         PRIMARY KEY,
+        "author_id"             INT4            NOT NULL REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "created"               TIMESTAMPTZ     NOT NULL DEFAULT now(),
+        "message"               TEXT            NOT NULL,
+        "unit_id"               INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "area_id"               INT4,
+        FOREIGN KEY ("unit_id", "area_id") REFERENCES "area" ("unit_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "policy_id"             INT4            REFERENCES "policy" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        FOREIGN KEY ("area_id", "issue_id") REFERENCES "issue" ("area_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
+        FOREIGN KEY ("policy_id", "issue_id") REFERENCES "issue" ("policy_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "initiative_id"         INT4,
+        "suggestion_id"         INT8,
+        -- NOTE: no referential integrity for suggestions because those are
+        --       actually deleted
+        -- FOREIGN KEY ("initiative_id", "suggestion_id")
+        --   REFERENCES "suggestion" ("initiative_id", "id")
+        --   ON DELETE CASCADE ON UPDATE CASCADE,
+        CONSTRAINT "area_requires_unit" CHECK (
+          "area_id" ISNULL OR "unit_id" NOTNULL ),
+        CONSTRAINT "policy_set_when_issue_set" CHECK (
+          ("policy_id" NOTNULL) = ("issue_id" NOTNULL) ),
+        CONSTRAINT "issue_requires_area" CHECK (
+          "issue_id" ISNULL OR "area_id" NOTNULL ),
+        CONSTRAINT "initiative_requires_issue" CHECK (
+          "initiative_id" ISNULL OR "issue_id" NOTNULL ),
+        CONSTRAINT "suggestion_requires_initiative" CHECK (
+          "suggestion_id" ISNULL OR "initiative_id" NOTNULL ) );
+CREATE INDEX "posting_global_idx" ON "posting" USING gist ((pstamp("author_id", "id")));
+CREATE INDEX "posting_unit_idx" ON "posting" USING gist ("unit_id", (pstamp("author_id", "id"))) WHERE "unit_id" NOTNULL;
+CREATE INDEX "posting_area_idx" ON "posting" USING gist ("area_id", (pstamp("author_id", "id"))) WHERE "area_id" NOTNULL;
+CREATE INDEX "posting_policy_idx" ON "posting" USING gist ("policy_id", (pstamp("author_id", "id"))) WHERE "policy_id" NOTNULL;
+CREATE INDEX "posting_issue_idx" ON "posting" USING gist ("issue_id", (pstamp("author_id", "id"))) WHERE "issue_id" NOTNULL;
+CREATE INDEX "posting_initiative_idx" ON "posting" USING gist ("initiative_id", (pstamp("author_id", "id"))) WHERE "initiative_id" NOTNULL;
+CREATE INDEX "posting_suggestion_idx" ON "posting" USING gist ("suggestion_id", (pstamp("author_id", "id"))) WHERE "suggestion_id" NOTNULL;
+
+COMMENT ON TABLE "posting" IS 'Text postings of members; a text posting may optionally be associated to a unit, area, policy, issue, initiative, or suggestion';
+
+
 CREATE TYPE "event_type" AS ENUM (
         'unit_created',
         'unit_updated',
@@ -1435,7 +1479,8 @@ CREATE TYPE "event_type" AS ENUM (
         'support_updated',
         'suggestion_rated',
         'delegation',
-        'contact' );
+        'contact',
+        'posting_created' );
 
 COMMENT ON TYPE "event_type" IS 'Type used for column "event" of table "event"';
 
@@ -1444,6 +1489,7 @@ CREATE TABLE "event" (
         "id"                    SERIAL8         PRIMARY KEY,
         "occurrence"            TIMESTAMPTZ     NOT NULL DEFAULT now(),
         "event"                 "event_type"    NOT NULL,
+        "posting_id"            INT8            REFERENCES "posting" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "other_member_id"       INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "scope"                 "delegation_scope",
@@ -1475,6 +1521,7 @@ CREATE TABLE "event" (
         --   ON DELETE CASCADE ON UPDATE CASCADE,
         CONSTRAINT "constr_for_issue_state_changed" CHECK (
           "event" != 'issue_state_changed' OR (
+            "posting_id"      ISNULL  AND
             "member_id"       ISNULL  AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1497,6 +1544,7 @@ CREATE TABLE "event" (
             'initiative_revoked',
             'new_draft_created'
           ) OR (
+            "posting_id"      ISNULL  AND
             "member_id"       NOTNULL AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1514,6 +1562,7 @@ CREATE TABLE "event" (
             "old_text_value"  ISNULL )),
         CONSTRAINT "constr_for_suggestion_creation" CHECK (
           "event" != 'suggestion_created' OR (
+            "posting_id"      ISNULL  AND
             "member_id"       NOTNULL AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1531,6 +1580,7 @@ CREATE TABLE "event" (
             "old_text_value"  ISNULL )),
         CONSTRAINT "constr_for_suggestion_removal" CHECK (
           "event" != 'suggestion_deleted' OR (
+            "posting_id"      ISNULL  AND
             "member_id"       ISNULL AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1553,6 +1603,7 @@ CREATE TABLE "event" (
             'member_profile_updated',
             'member_image_updated'
           ) OR (
+            "posting_id"      ISNULL  AND
             "member_id"       NOTNULL AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1570,6 +1621,7 @@ CREATE TABLE "event" (
             "old_text_value"  ISNULL )),
         CONSTRAINT "constr_for_member_active" CHECK (
           "event" != 'member_active' OR (
+            "posting_id"      ISNULL  AND
             "member_id"       NOTNULL AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1587,6 +1639,7 @@ CREATE TABLE "event" (
             "old_text_value"  ISNULL )),
         CONSTRAINT "constr_for_member_name_updated" CHECK (
           "event" != 'member_name_updated' OR (
+            "posting_id"      ISNULL  AND
             "member_id"       NOTNULL AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1604,6 +1657,7 @@ CREATE TABLE "event" (
             "old_text_value"  NOTNULL )),
         CONSTRAINT "constr_for_interest" CHECK (
           "event" != 'interest' OR (
+            "posting_id"      ISNULL  AND
             "member_id"       NOTNULL AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1621,6 +1675,7 @@ CREATE TABLE "event" (
             "old_text_value"  ISNULL )),
         CONSTRAINT "constr_for_initiator" CHECK (
           "event" != 'initiator' OR (
+            "posting_id"      ISNULL  AND
             "member_id"       NOTNULL AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1638,6 +1693,7 @@ CREATE TABLE "event" (
             "old_text_value"  ISNULL )),
         CONSTRAINT "constr_for_support" CHECK (
           "event" != 'support' OR (
+            "posting_id"      ISNULL  AND
             "member_id"       NOTNULL AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1655,6 +1711,7 @@ CREATE TABLE "event" (
             "old_text_value"  ISNULL )),
         CONSTRAINT "constr_for_support_updated" CHECK (
           "event" != 'support_updated' OR (
+            "posting_id"      ISNULL  AND
             "member_id"       NOTNULL AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1672,6 +1729,7 @@ CREATE TABLE "event" (
             "old_text_value"  ISNULL )),
         CONSTRAINT "constr_for_suggestion_rated" CHECK (
           "event" != 'suggestion_rated' OR (
+            "posting_id"      ISNULL  AND
             "member_id"       NOTNULL AND
             "other_member_id" ISNULL  AND
             "scope"           ISNULL  AND
@@ -1690,6 +1748,7 @@ CREATE TABLE "event" (
             "old_text_value"  ISNULL )),
         CONSTRAINT "constr_for_delegation" CHECK (
           "event" != 'delegation' OR (
+            "posting_id"      ISNULL  AND
             "member_id"       NOTNULL AND
             (("other_member_id" ISNULL) OR ("boolean_value" = TRUE)) AND
             "scope"           NOTNULL AND
@@ -1707,6 +1766,7 @@ CREATE TABLE "event" (
             "old_text_value"  ISNULL )),
         CONSTRAINT "constr_for_contact" CHECK (
           "event" != 'contact' OR (
+            "posting_id"      ISNULL  AND
             "member_id"       NOTNULL AND
             "other_member_id" NOTNULL AND
             "scope"           ISNULL  AND
@@ -1721,8 +1781,34 @@ CREATE TABLE "event" (
             "boolean_value"   NOTNULL AND
             "numeric_value"   ISNULL  AND
             "text_value"      ISNULL  AND
+            "old_text_value"  ISNULL )),
+        CONSTRAINT "constr_for_posting_created" CHECK (
+          "event" != 'posting_created' OR (
+            "posting_id"      NOTNULL AND
+            "member_id"       NOTNULL AND
+            "other_member_id" ISNULL  AND
+            "scope"           ISNULL  AND
+            "state"           ISNULL  AND
+            ("area_id" ISNULL OR "unit_id" NOTNULL) AND
+            ("policy_id" NOTNULL) = ("issue_id" NOTNULL) AND
+            ("issue_id" ISNULL OR "area_id" NOTNULL) AND
+            ("state" NOTNULL) = ("issue_id" NOTNULL) AND
+            ("initiative_id" ISNULL OR "issue_id" NOTNULL) AND
+            "draft_id"        ISNULL  AND
+            ("suggestion_id" ISNULL OR "initiative_id" NOTNULL) AND
+            "boolean_value"   ISNULL  AND
+            "numeric_value"   ISNULL  AND
+            "text_value"      ISNULL  AND
             "old_text_value"  ISNULL )) );
 CREATE INDEX "event_occurrence_idx" ON "event" ("occurrence");
+CREATE INDEX "event_tl_global_idx" ON "event" USING gist ((pstamp("member_id", "id")));
+CREATE INDEX "event_tl_unit_idx" ON "event" USING gist ("unit_id", (pstamp("member_id", "id"))) WHERE "unit_id" NOTNULL;
+CREATE INDEX "event_tl_area_idx" ON "event" USING gist ("area_id", (pstamp("member_id", "id"))) WHERE "area_id" NOTNULL;
+CREATE INDEX "event_tl_policy_idx" ON "event" USING gist ("policy_id", (pstamp("member_id", "id"))) WHERE "policy_id" NOTNULL;
+CREATE INDEX "event_tl_issue_idx" ON "event" USING gist ("issue_id", (pstamp("member_id", "id"))) WHERE "issue_id" NOTNULL;
+CREATE INDEX "event_tl_initiative_idx" ON "event" USING gist ("initiative_id", (pstamp("member_id", "id"))) WHERE "initiative_id" NOTNULL;
+CREATE INDEX "event_tl_suggestion_idx" ON "event" USING gist ("suggestion_id", (pstamp("member_id", "id"))) WHERE "suggestion_id" NOTNULL;
+
 
 COMMENT ON TABLE "event" IS 'Event table, automatically filled by triggers';
 
@@ -2665,6 +2751,31 @@ COMMENT ON FUNCTION "write_event_contact_trigger"()   IS 'Implementation of trig
 COMMENT ON TRIGGER "write_event_contact" ON "contact" IS 'Create entry in "event" table when adding or removing public contacts';
 
 
+CREATE FUNCTION "write_event_posting_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      INSERT INTO "event" (
+          "event", "posting_id", "member_id",
+          "unit_id", "area_id", "policy_id",
+          "issue_id", "initiative_id", "suggestion_id"
+        ) VALUES (
+          'posting_created', NEW."id", NEW."author_id",
+          NEW."unit_id", NEW."area_id", NEW."policy_id",
+          NEW."issue_id", NEW."initiative_id", NEW."suggestion_id"
+        );
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "write_event_posting"
+  AFTER INSERT ON "posting" FOR EACH ROW EXECUTE PROCEDURE
+  "write_event_posting_trigger"();
+
+COMMENT ON FUNCTION "write_event_posting_trigger"()   IS 'Implementation of trigger "write_event_posting" on table "posting"';
+COMMENT ON TRIGGER "write_event_posting" ON "posting" IS 'Create entry in "event" table when creating a new posting';
+
+
 CREATE FUNCTION "send_event_notify_trigger"()
   RETURNS TRIGGER
   LANGUAGE 'plpgsql' VOLATILE AS $$
@@ -3338,6 +3449,18 @@ CREATE VIEW "member_to_notify" AS
   WHERE "disable_notifications" = FALSE;
 
 COMMENT ON VIEW "member_to_notify" IS 'Filtered "member" table containing only members that are eligible to and wish to receive notifications; NOTE: "notify_email" may still be NULL and might need to be checked by frontend (this allows other means of messaging)';
+
+
+CREATE VIEW "follower" AS
+  SELECT
+    "id" AS "follower_id",
+    ( SELECT ARRAY["member"."id"] || array_agg("contact"."other_member_id")
+      FROM "contact"
+      WHERE "contact"."member_id" = "member"."id" AND "contact"."following" )
+      AS "following_ids"
+  FROM "member";
+
+COMMENT ON VIEW "follower" IS 'Provides the contacts of each member that are being followed (including the member itself) as an array of IDs';
 
 
 CREATE VIEW "area_quorum" AS
