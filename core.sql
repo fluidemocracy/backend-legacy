@@ -67,15 +67,13 @@ COMMENT ON COLUMN "temporary_transaction_data"."txid" IS 'Value returned by func
 
 
 CREATE TABLE "system_setting" (
-        "member_ttl"            INTERVAL,
-        "snapshot_retention"    INTERVAL );
+        "member_ttl"            INTERVAL );
 CREATE UNIQUE INDEX "system_setting_singleton_idx" ON "system_setting" ((1));
 
 COMMENT ON TABLE "system_setting" IS 'This table contains only one row with different settings in each column.';
 COMMENT ON INDEX "system_setting_singleton_idx" IS 'This index ensures that "system_setting" only contains one row maximum.';
 
 COMMENT ON COLUMN "system_setting"."member_ttl"         IS 'Time after members get their "active" flag set to FALSE, if they do not show any activity.';
-COMMENT ON COLUMN "system_setting"."snapshot_retention" IS 'Unreferenced snapshots are retained for the given period of time after creation; set to NULL for infinite retention.';
 
 
 CREATE TABLE "contingent" (
@@ -3830,17 +3828,6 @@ CREATE RULE "delete" AS ON DELETE TO "unused_snapshot" DO INSTEAD
 COMMENT ON VIEW "unused_snapshot" IS 'Snapshots that are not referenced by any issue (either as latest snapshot or as snapshot at phase/state change)';
 
 
-CREATE VIEW "expired_snapshot" AS
-  SELECT "unused_snapshot".* FROM "unused_snapshot" CROSS JOIN "system_setting"
-  WHERE "unused_snapshot"."calculated" <
-    now() - "system_setting"."snapshot_retention";
-
-CREATE RULE "delete" AS ON DELETE TO "expired_snapshot" DO INSTEAD
-  DELETE FROM "snapshot" WHERE "id" = OLD."id";
-
-COMMENT ON VIEW "expired_snapshot" IS 'Contains "unused_snapshot"s that are older than "system_setting"."snapshot_retention" (for deletion)';
-
-
 CREATE VIEW "open_issue" AS
   SELECT * FROM "issue" WHERE "closed" ISNULL;
 
@@ -6501,7 +6488,7 @@ CREATE FUNCTION "check_everything"()
       RAISE WARNING 'Function "check_everything" should only be used for development and debugging purposes';
       DELETE FROM "expired_session";
       DELETE FROM "expired_token";
-      DELETE FROM "expired_snapshot";
+      DELETE FROM "unused_snapshot";
       PERFORM "check_activity"();
       PERFORM "calculate_member_counts"();
       FOR "area_id_v" IN SELECT "id" FROM "area_with_unaccepted_issues" LOOP
@@ -6519,6 +6506,7 @@ CREATE FUNCTION "check_everything"()
           EXIT WHEN "persist_v" ISNULL;
         END LOOP;
       END LOOP;
+      DELETE FROM "unused_snapshot";
       RETURN;
     END;
   $$;

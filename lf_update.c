@@ -105,8 +105,8 @@ int main(int argc, char **argv) {
   // delete expired tokens and authorization codes:
   exec_sql(db, NULL, &err, 0, "DELETE FROM \"expired_token\"");
  
-  // delete expired snapshots:
-  exec_sql(db, NULL, &err, 0, "DELETE FROM \"expired_snapshot\"");
+  // delete unused snapshots:
+  exec_sql(db, NULL, &err, 0, "DELETE FROM \"unused_snapshot\"");
  
   // check member activity:
   exec_sql(db, NULL, &err, 0, "SET TRANSACTION ISOLATION LEVEL READ COMMITTED; SELECT \"check_activity\"()");
@@ -274,7 +274,10 @@ int main(int argc, char **argv) {
   }
   if (res) PQclear(res);
 
-  // cleanup and exit:
+  // delete unused snapshots:
+  exec_sql(db, NULL, &err, 0, "DELETE FROM \"unused_snapshot\"");
+
+   // cleanup and exit:
   PQfinish(db);
   return err;
 
