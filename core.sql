@@ -301,6 +301,7 @@ CREATE TABLE "member_useterms" (
         "member_id"             INT4            NOT NULL REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "accepted"              TIMESTAMPTZ     NOT NULL DEFAULT now(),
         "contract_identifier"   TEXT            NOT NULL );
+CREATE INDEX "member_useterms_member_id_contract_identifier" ON "member_useterms" ("member_id", "contract_identifier");
 
 COMMENT ON TABLE "member_useterms" IS 'Keeps record of accepted terms of use; may contain multiple rows per member';
 
