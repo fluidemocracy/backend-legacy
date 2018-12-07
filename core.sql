@@ -872,10 +872,10 @@ CREATE INDEX "issue_fully_frozen_idx" ON "issue" ("fully_frozen");
 CREATE INDEX "issue_closed_idx" ON "issue" ("closed");
 CREATE INDEX "issue_created_idx_open" ON "issue" ("created") WHERE "closed" ISNULL;
 CREATE INDEX "issue_closed_idx_canceled" ON "issue" ("closed") WHERE "fully_frozen" ISNULL;
-CREATE INDEX "issue_latest_snapshot_id" ON "issue" ("latest_snapshot_id");
-CREATE INDEX "issue_admission_snapshot_id" ON "issue" ("admission_snapshot_id");
-CREATE INDEX "issue_half_freeze_snapshot_id" ON "issue" ("half_freeze_snapshot_id");
-CREATE INDEX "issue_full_freeze_snapshot_id" ON "issue" ("full_freeze_snapshot_id");
+CREATE INDEX "issue_latest_snapshot_id_idx" ON "issue" ("latest_snapshot_id");
+CREATE INDEX "issue_admission_snapshot_id_idx" ON "issue" ("admission_snapshot_id");
+CREATE INDEX "issue_half_freeze_snapshot_id_idx" ON "issue" ("half_freeze_snapshot_id");
+CREATE INDEX "issue_full_freeze_snapshot_id_idx" ON "issue" ("full_freeze_snapshot_id");
 
 COMMENT ON TABLE "issue" IS 'Groups of initiatives';
 
