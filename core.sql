@@ -1018,9 +1018,8 @@ CREATE TABLE "battle" (
         FOREIGN KEY ("issue_id", "losing_initiative_id") REFERENCES "initiative" ("issue_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
         "count"                 INT4            NOT NULL,
         CONSTRAINT "initiative_ids_not_equal" CHECK (
-          "winning_initiative_id" != "losing_initiative_id" OR
-          ( ("winning_initiative_id" NOTNULL AND "losing_initiative_id" ISNULL) OR
-            ("winning_initiative_id" ISNULL AND "losing_initiative_id" NOTNULL) ) ) );
+          "winning_initiative_id" != "losing_initiative_id" AND
+          ("winning_initiative_id" NOTNULL OR "losing_initiative_id" NOTNULL) ) );
 CREATE UNIQUE INDEX "battle_winning_losing_idx" ON "battle" ("issue_id", "winning_initiative_id", "losing_initiative_id");
 CREATE UNIQUE INDEX "battle_winning_null_idx" ON "battle" ("issue_id", "winning_initiative_id") WHERE "losing_initiative_id" ISNULL;
 CREATE UNIQUE INDEX "battle_null_losing_idx" ON "battle" ("issue_id", "losing_initiative_id") WHERE "winning_initiative_id" ISNULL;
