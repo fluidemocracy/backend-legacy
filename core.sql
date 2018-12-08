@@ -866,12 +866,8 @@ CREATE TABLE "issue" (
           ("fully_frozen" ISNULL OR "full_freeze_snapshot_id" NOTNULL) ) );
 CREATE INDEX "issue_state_idx" ON "issue" ("state");
 CREATE INDEX "issue_created_idx" ON "issue" ("created");
-CREATE INDEX "issue_accepted_idx" ON "issue" ("accepted");
-CREATE INDEX "issue_half_frozen_idx" ON "issue" ("half_frozen");
-CREATE INDEX "issue_fully_frozen_idx" ON "issue" ("fully_frozen");
 CREATE INDEX "issue_closed_idx" ON "issue" ("closed");
-CREATE INDEX "issue_created_idx_open" ON "issue" ("created") WHERE "closed" ISNULL;
-CREATE INDEX "issue_closed_idx_canceled" ON "issue" ("closed") WHERE "fully_frozen" ISNULL;
+CREATE INDEX "issue_open_created_idx" ON "issue" ("created") WHERE "closed" ISNULL;
 CREATE INDEX "issue_latest_snapshot_id_idx" ON "issue" ("latest_snapshot_id");
 CREATE INDEX "issue_admission_snapshot_id_idx" ON "issue" ("admission_snapshot_id");
 CREATE INDEX "issue_half_freeze_snapshot_id_idx" ON "issue" ("half_freeze_snapshot_id");
