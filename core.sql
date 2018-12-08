@@ -973,7 +973,6 @@ CREATE TABLE "initiative" (
         CONSTRAINT "eligible_at_first_rank_is_winner" CHECK ("eligible"=FALSE OR "rank"!=1 OR "winner"=TRUE),
         CONSTRAINT "unique_rank_per_issue" UNIQUE ("issue_id", "rank") );
 CREATE INDEX "initiative_created_idx" ON "initiative" ("created");
-CREATE INDEX "initiative_revoked_idx" ON "initiative" ("revoked");
 CREATE INDEX "initiative_location_idx" ON "initiative" USING gist ((GeoJSON_to_ecluster("location")));
 CREATE INDEX "initiative_text_search_data_idx" ON "initiative" USING gin ("text_search_data");
 CREATE INDEX "initiative_draft_text_search_data_idx" ON "initiative" USING gin ("draft_text_search_data");
