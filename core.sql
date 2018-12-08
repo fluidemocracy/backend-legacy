@@ -13,43 +13,6 @@ CREATE VIEW "liquid_feedback_version" AS
 
 
 
-----------------------
--- Full text search --
-----------------------
-
-
-CREATE FUNCTION "text_search_query"("query_text_p" TEXT)
-  RETURNS TSQUERY
-  LANGUAGE 'plpgsql' IMMUTABLE AS $$
-    BEGIN
-      RETURN plainto_tsquery('pg_catalog.simple', "query_text_p");
-    END;
-  $$;
-
-COMMENT ON FUNCTION "text_search_query"(TEXT) IS 'Usage: WHERE "text_search_data" @@ "text_search_query"(''<user query>'')';
-
-
-CREATE FUNCTION "highlight"
-  ( "body_p"       TEXT,
-    "query_text_p" TEXT )
-  RETURNS TEXT
-  LANGUAGE 'plpgsql' IMMUTABLE AS $$
-    BEGIN
-      RETURN ts_headline(
-        'pg_catalog.simple',
-        replace(replace("body_p", e'\\', e'\\\\'), '*', e'\\*'),
-        "text_search_query"("query_text_p"),
-        'StartSel=* StopSel=* HighlightAll=TRUE' );
-    END;
-  $$;
-
-COMMENT ON FUNCTION "highlight"
-  ( "body_p"       TEXT,
-    "query_text_p" TEXT )
-  IS 'For a given a user query this function encapsulates all matches with asterisks. Asterisks and backslashes being already present are preceeded with one extra backslash.';
-
-
-
 -------------------------
 -- Tables and indicies --
 -------------------------
@@ -125,12 +88,11 @@ CREATE TABLE "member" (
         "login_recovery_expiry"        TIMESTAMPTZ,
         "password_reset_secret"        TEXT     UNIQUE,
         "password_reset_secret_expiry" TIMESTAMPTZ,
-        "name"                  TEXT            UNIQUE,
-        "identification"        TEXT            UNIQUE,
+        "name"                  TEXT            UNIQUE,  -- full text search
+        "identification"        TEXT            UNIQUE,  -- full text search
         "authentication"        TEXT,
         "role"                  BOOLEAN         NOT NULL DEFAULT FALSE,
         "location"              JSONB,
-        "text_search_data"      TSVECTOR,
         CONSTRAINT "deleted_requires_locked"
           CHECK ("deleted" ISNULL OR "locked" = TRUE),
         CONSTRAINT "active_requires_activated_and_last_activity"
@@ -148,12 +110,6 @@ CREATE TABLE "member" (
 CREATE INDEX "member_authority_login_idx" ON "member" ("authority_login");
 CREATE INDEX "member_active_idx" ON "member" ("active");
 CREATE INDEX "member_location_idx" ON "member" USING gist ((GeoJSON_to_ecluster("location")));
-CREATE INDEX "member_text_search_data_idx" ON "member" USING gin ("text_search_data");
-CREATE TRIGGER "update_text_search_data"
-  BEFORE INSERT OR UPDATE ON "member"
-  FOR EACH ROW EXECUTE PROCEDURE
-  tsvector_update_trigger('text_search_data', 'pg_catalog.simple',
-    "name", "identification");
 
 COMMENT ON TABLE "member" IS 'Users of the system, e.g. members of an organization';
 
@@ -312,16 +268,9 @@ COMMENT ON COLUMN "member_useterms"."contract_identifier" IS 'String identifier 
 CREATE TABLE "member_profile" (
         "member_id"             INT4            PRIMARY KEY REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "formatting_engine"     TEXT,
-        "statement"             TEXT,
+        "statement"             TEXT,           -- full text search
         "profile"               JSONB           NOT NULL DEFAULT '{}' CHECK (jsonb_typeof("profile") = 'object'),
-        "profile_text_data"     TEXT,
-        "text_search_data"      TSVECTOR );
-CREATE INDEX "member_profile_text_search_data_idx" ON "member_profile" USING gin ("text_search_data");
-CREATE TRIGGER "update_text_search_data"
-  BEFORE INSERT OR UPDATE ON "member_profile"
-  FOR EACH ROW EXECUTE PROCEDURE
-  tsvector_update_trigger('text_search_data', 'pg_catalog.simple',
-    'statement', 'profile_text_data');
+        "profile_text_data"     TEXT );         -- full text search
 
 COMMENT ON COLUMN "member_profile"."formatting_engine" IS 'Allows different formatting engines (i.e. wiki formats) to be used for "member_profile"."statement"';
 COMMENT ON COLUMN "member_profile"."statement"         IS 'Freely chosen text of the member for his/her profile';
@@ -665,22 +614,15 @@ CREATE TABLE "unit" (
         "id"                    SERIAL4         PRIMARY KEY,
         "parent_id"             INT4            REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "active"                BOOLEAN         NOT NULL DEFAULT TRUE,
-        "name"                  TEXT            NOT NULL,
-        "description"           TEXT            NOT NULL DEFAULT '',
+        "name"                  TEXT            NOT NULL,  -- full text search
+        "description"           TEXT            NOT NULL DEFAULT '',  -- full text search
         "external_reference"    TEXT,
         "member_count"          INT4,
-        "location"              JSONB,
-        "text_search_data"      TSVECTOR );
+        "location"              JSONB );
 CREATE INDEX "unit_root_idx" ON "unit" ("id") WHERE "parent_id" ISNULL;
 CREATE INDEX "unit_parent_id_idx" ON "unit" ("parent_id");
 CREATE INDEX "unit_active_idx" ON "unit" ("active");
 CREATE INDEX "unit_location_idx" ON "unit" USING gist ((GeoJSON_to_ecluster("location")));
-CREATE INDEX "unit_text_search_data_idx" ON "unit" USING gin ("text_search_data");
-CREATE TRIGGER "update_text_search_data"
-  BEFORE INSERT OR UPDATE ON "unit"
-  FOR EACH ROW EXECUTE PROCEDURE
-  tsvector_update_trigger('text_search_data', 'pg_catalog.simple',
-    "name", "description" );
 
 COMMENT ON TABLE "unit" IS 'Organizational units organized as trees; Delegations are not inherited through these trees.';
 
@@ -705,8 +647,8 @@ CREATE TABLE "area" (
         "id"                    SERIAL4         PRIMARY KEY,
         "unit_id"               INT4            NOT NULL REFERENCES "unit" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "active"                BOOLEAN         NOT NULL DEFAULT TRUE,
-        "name"                  TEXT            NOT NULL,
-        "description"           TEXT            NOT NULL DEFAULT '',
+        "name"                  TEXT            NOT NULL,  -- full text search
+        "description"           TEXT            NOT NULL DEFAULT '',  -- full text search
         "quorum_standard"       NUMERIC         NOT NULL DEFAULT 2 CHECK ("quorum_standard" >= 0),
         "quorum_issues"         NUMERIC         NOT NULL DEFAULT 1 CHECK ("quorum_issues" > 0),
         "quorum_time"           INTERVAL        NOT NULL DEFAULT '1 day' CHECK ("quorum_time" > '0'::INTERVAL),
@@ -715,16 +657,9 @@ CREATE TABLE "area" (
         "quorum_den"            INT4            CHECK ("quorum_den" > 0),
         "issue_quorum"          INT4,
         "external_reference"    TEXT,
-        "location"              JSONB,
-        "text_search_data"      TSVECTOR );
+        "location"              JSONB );
 CREATE INDEX "area_active_idx" ON "area" ("active");
 CREATE INDEX "area_location_idx" ON "area" USING gist ((GeoJSON_to_ecluster("location")));
-CREATE INDEX "area_text_search_data_idx" ON "area" USING gin ("text_search_data");
-CREATE TRIGGER "update_text_search_data"
-  BEFORE INSERT OR UPDATE ON "area"
-  FOR EACH ROW EXECUTE PROCEDURE
-  tsvector_update_trigger('text_search_data', 'pg_catalog.simple',
-    "name", "description" );
 
 COMMENT ON TABLE "area" IS 'Subject areas';
 
@@ -919,13 +854,14 @@ CREATE TABLE "initiative" (
         UNIQUE ("issue_id", "id"),  -- index needed for foreign-key on table "vote"
         "issue_id"              INT4            NOT NULL REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "id"                    SERIAL4         PRIMARY KEY,
-        "name"                  TEXT            NOT NULL,
+        "name"                  TEXT            NOT NULL,  -- full text index
         "polling"               BOOLEAN         NOT NULL DEFAULT FALSE,
         "created"               TIMESTAMPTZ     NOT NULL DEFAULT now(),
         "revoked"               TIMESTAMPTZ,
         "revoked_by_member_id"  INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "suggested_initiative_id" INT4          REFERENCES "initiative" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
         "location"              JSONB,
+        "content"               TEXT,           -- full text search
         "external_reference"    TEXT,
         "admitted"              BOOLEAN,
         "supporter_count"                    INT4,
@@ -947,8 +883,6 @@ CREATE TABLE "initiative" (
         "eligible"              BOOLEAN,
         "winner"                BOOLEAN,
         "rank"                  INT4,
-        "text_search_data"      TSVECTOR,
-        "draft_text_search_data" TSVECTOR,
         CONSTRAINT "all_or_none_of_revoked_and_revoked_by_member_id_must_be_null"
           CHECK (("revoked" NOTNULL) = ("revoked_by_member_id" NOTNULL)),
         CONSTRAINT "non_revoked_initiatives_cant_suggest_other"
@@ -974,12 +908,6 @@ CREATE TABLE "initiative" (
         CONSTRAINT "unique_rank_per_issue" UNIQUE ("issue_id", "rank") );
 CREATE INDEX "initiative_created_idx" ON "initiative" ("created");
 CREATE INDEX "initiative_location_idx" ON "initiative" USING gist ((GeoJSON_to_ecluster("location")));
-CREATE INDEX "initiative_text_search_data_idx" ON "initiative" USING gin ("text_search_data");
-CREATE INDEX "initiative_draft_text_search_data_idx" ON "initiative" USING gin ("draft_text_search_data");
-CREATE TRIGGER "update_text_search_data"
-  BEFORE INSERT OR UPDATE ON "initiative"
-  FOR EACH ROW EXECUTE PROCEDURE
-  tsvector_update_trigger('text_search_data', 'pg_catalog.simple', "name");
 
 COMMENT ON TABLE "initiative" IS 'Group of members publishing drafts for resolutions to be passed; Frontends must ensure that initiatives of half_frozen issues are not revoked, and that initiatives of fully_frozen or closed issues are neither revoked nor created.';
 
@@ -987,6 +915,7 @@ COMMENT ON COLUMN "initiative"."polling"                IS 'Initiative does not 
 COMMENT ON COLUMN "initiative"."revoked"                IS 'Point in time, when one initiator decided to revoke the initiative';
 COMMENT ON COLUMN "initiative"."revoked_by_member_id"   IS 'Member, who decided to revoke the initiative';
 COMMENT ON COLUMN "initiative"."location"               IS 'Geographic location of initiative as GeoJSON object (automatically copied from most recent draft)';
+COMMENT ON COLUMN "initiative"."content"                IS 'Initiative text (automatically copied from most recent draft)';
 COMMENT ON COLUMN "initiative"."external_reference"     IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "initiative"."admitted"               IS 'TRUE, if initiative reaches the "initiative_quorum" when freezing the issue';
 COMMENT ON COLUMN "initiative"."supporter_count"                    IS 'Calculated from table "direct_supporter_snapshot"';
@@ -1043,18 +972,12 @@ CREATE TABLE "draft" (
         "created"               TIMESTAMPTZ     NOT NULL DEFAULT now(),
         "author_id"             INT4            NOT NULL REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "formatting_engine"     TEXT,
-        "content"               TEXT            NOT NULL,
+        "content"               TEXT            NOT NULL,  -- full text search
         "location"              JSONB,
-        "external_reference"    TEXT,
-        "text_search_data"      TSVECTOR );
+        "external_reference"    TEXT );
 CREATE INDEX "draft_created_idx" ON "draft" ("created");
 CREATE INDEX "draft_author_id_created_idx" ON "draft" ("author_id", "created");
 CREATE INDEX "draft_location_idx" ON "draft" USING gist ((GeoJSON_to_ecluster("location")));
-CREATE INDEX "draft_text_search_data_idx" ON "draft" USING gin ("text_search_data");
-CREATE TRIGGER "update_text_search_data"
-  BEFORE INSERT OR UPDATE ON "draft"
-  FOR EACH ROW EXECUTE PROCEDURE
-  tsvector_update_trigger('text_search_data', 'pg_catalog.simple', "content");
 
 COMMENT ON TABLE "draft" IS 'Drafts of initiatives to solve issues; Frontends must ensure that new drafts for initiatives of half_frozen, fully_frozen or closed issues can''t be created.';
 
@@ -1081,12 +1004,11 @@ CREATE TABLE "suggestion" (
         FOREIGN KEY ("initiative_id", "draft_id") REFERENCES "draft" ("initiative_id", "id") ON DELETE NO ACTION ON UPDATE CASCADE,
         "created"               TIMESTAMPTZ     NOT NULL DEFAULT now(),
         "author_id"             INT4            NOT NULL REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
-        "name"                  TEXT            NOT NULL,
+        "name"                  TEXT            NOT NULL,  -- full text search
         "formatting_engine"     TEXT,
-        "content"               TEXT            NOT NULL DEFAULT '',
+        "content"               TEXT            NOT NULL DEFAULT '',  -- full text search
         "location"              JSONB,
         "external_reference"    TEXT,
-        "text_search_data"      TSVECTOR,
         "minus2_unfulfilled_count" INT4,
         "minus2_fulfilled_count"   INT4,
         "minus1_unfulfilled_count" INT4,
@@ -1099,12 +1021,6 @@ CREATE TABLE "suggestion" (
 CREATE INDEX "suggestion_created_idx" ON "suggestion" ("created");
 CREATE INDEX "suggestion_author_id_created_idx" ON "suggestion" ("author_id", "created");
 CREATE INDEX "suggestion_location_idx" ON "suggestion" USING gist ((GeoJSON_to_ecluster("location")));
-CREATE INDEX "suggestion_text_search_data_idx" ON "suggestion" USING gin ("text_search_data");
-CREATE TRIGGER "update_text_search_data"
-  BEFORE INSERT OR UPDATE ON "suggestion"
-  FOR EACH ROW EXECUTE PROCEDURE
-  tsvector_update_trigger('text_search_data', 'pg_catalog.simple',
-    "name", "content");
 
 COMMENT ON TABLE "suggestion" IS 'Suggestions to initiators, to change the current draft; must not be deleted explicitly, as they vanish automatically if the last opinion is deleted';
 
@@ -1340,14 +1256,8 @@ CREATE TABLE "direct_voter" (
         "weight"                INT4,
         "comment_changed"       TIMESTAMPTZ,
         "formatting_engine"     TEXT,
-        "comment"               TEXT,
-        "text_search_data"      TSVECTOR );
+        "comment"               TEXT );         -- full text index
 CREATE INDEX "direct_voter_member_id_idx" ON "direct_voter" ("member_id");
-CREATE INDEX "direct_voter_text_search_data_idx" ON "direct_voter" USING gin ("text_search_data");
-CREATE TRIGGER "update_text_search_data"
-  BEFORE INSERT OR UPDATE ON "direct_voter"
-  FOR EACH ROW EXECUTE PROCEDURE
-  tsvector_update_trigger('text_search_data', 'pg_catalog.simple', "comment");
 
 COMMENT ON TABLE "direct_voter" IS 'Members having directly voted for/against initiatives of an issue; frontends must ensure that no voters are added or removed to/from this table when the issue has been closed; for corrections refer to column "issue_notice" of "issue" table';
 
@@ -1853,6 +1763,95 @@ COMMENT ON COLUMN "newsletter"."include_all_members" IS 'TRUE = include all memb
 COMMENT ON COLUMN "newsletter"."sent"                IS 'Timestamp when the newsletter has been mailed out';
 COMMENT ON COLUMN "newsletter"."subject"             IS 'Subject line (e.g. to be used for the email)';
 COMMENT ON COLUMN "newsletter"."content"             IS 'Plain text content of the newsletter';
+
+
+
+----------------------
+-- Full text search --
+----------------------
+
+
+CREATE FUNCTION "highlight"
+  ( "body_p"       TEXT,
+    "query_text_p" TEXT )
+  RETURNS TEXT
+  LANGUAGE 'plpgsql' IMMUTABLE AS $$
+    BEGIN
+      RETURN ts_headline(
+        replace(replace("body_p", e'\\', e'\\\\'), '*', e'\\*'),
+        "text_search_query"("query_text_p"),
+        'StartSel=* StopSel=* HighlightAll=TRUE' );
+    END;
+  $$;
+
+COMMENT ON FUNCTION "highlight"
+  ( "body_p"       TEXT,
+    "query_text_p" TEXT )
+  IS 'For a given a user query this function encapsulates all matches with asterisks. Asterisks and backslashes being already present are preceeded with one extra backslash.';
+
+
+CREATE FUNCTION "to_tsvector"("member") RETURNS TSVECTOR
+  LANGUAGE SQL IMMUTABLE AS $$ SELECT to_tsvector(concat_ws(' ',
+    $1."name",
+    $1."identification"
+  )) $$;
+CREATE INDEX ON "member" USING gin
+  (("to_tsvector"("member".*)));
+
+
+CREATE FUNCTION "to_tsvector"("member_profile") RETURNS TSVECTOR
+  LANGUAGE SQL IMMUTABLE AS $$ SELECT to_tsvector(concat_ws(' ',
+    $1."statement",
+    $1."profile_text_data"
+  )) $$;
+CREATE INDEX ON "member_profile" USING gin
+  (("to_tsvector"("member_profile".*)));
+
+CREATE FUNCTION "to_tsvector"("unit") RETURNS TSVECTOR
+  LANGUAGE SQL IMMUTABLE AS $$ SELECT to_tsvector(concat_ws(' ',
+    $1."name",
+    $1."description"
+  )) $$;
+CREATE INDEX ON "unit" USING gin
+  (("to_tsvector"("unit".*)));
+
+CREATE FUNCTION "to_tsvector"("area") RETURNS TSVECTOR
+  LANGUAGE SQL IMMUTABLE AS $$ SELECT to_tsvector(concat_ws(' ',
+    $1."name",
+    $1."description"
+  )) $$;
+CREATE INDEX ON "area" USING gin
+  (("to_tsvector"("area".*)));
+
+CREATE FUNCTION "to_tsvector"("initiative") RETURNS TSVECTOR
+  LANGUAGE SQL IMMUTABLE AS $$ SELECT to_tsvector(concat_ws(' ',
+    $1."name",
+    $1."content"
+  )) $$;
+CREATE INDEX ON "initiative" USING gin
+  (("to_tsvector"("initiative".*)));
+
+CREATE FUNCTION "to_tsvector"("draft") RETURNS TSVECTOR
+  LANGUAGE SQL IMMUTABLE AS $$ SELECT to_tsvector(concat_ws(' ',
+    $1."content"
+  )) $$;
+CREATE INDEX ON "draft" USING gin
+  (("to_tsvector"("draft".*)));
+
+CREATE FUNCTION "to_tsvector"("suggestion") RETURNS TSVECTOR
+  LANGUAGE SQL IMMUTABLE AS $$ SELECT to_tsvector(concat_ws(' ',
+    $1."name",
+    $1."content"
+  )) $$;
+CREATE INDEX ON "suggestion" USING gin
+  (("to_tsvector"("suggestion".*)));
+
+CREATE FUNCTION "to_tsvector"("direct_voter") RETURNS TSVECTOR
+  LANGUAGE SQL IMMUTABLE AS $$ SELECT to_tsvector(concat_ws(' ',
+    $1."comment"
+  )) $$;
+CREATE INDEX ON "direct_voter" USING gin
+  (("to_tsvector"("direct_voter".*)));
 
 
 
@@ -3263,7 +3262,7 @@ CREATE FUNCTION "copy_current_draft_data"
         FOR UPDATE;
       UPDATE "initiative" SET
         "location" = "draft"."location",
-        "draft_text_search_data" = "draft"."text_search_data"
+        "content"  = "draft"."content"
         FROM "current_draft" AS "draft"
         WHERE "initiative"."id" = "initiative_id_p"
         AND "draft"."initiative_id" = "initiative_id_p";
@@ -6586,7 +6585,6 @@ CREATE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
         "password_reset_secret_expiry" = NULL,
         "location"                     = NULL
         WHERE "id" = "member_id_p";
-      -- "text_search_data" is updated by triggers
       DELETE FROM "member_settings"    WHERE "member_id" = "member_id_p";
       DELETE FROM "member_profile"     WHERE "member_id" = "member_id_p";
       DELETE FROM "rendered_member_statement" WHERE "member_id" = "member_id_p";
@@ -6647,7 +6645,6 @@ CREATE FUNCTION "delete_private_data"()
         "password_reset_secret"        = NULL,
         "password_reset_secret_expiry" = NULL,
         "location"                     = NULL;
-      -- "text_search_data" is updated by triggers
       DELETE FROM "verification";
       DELETE FROM "member_settings";
       DELETE FROM "member_useterms";
