@@ -1317,6 +1317,7 @@ COMMENT ON COLUMN "vote"."first_preference" IS 'Value is automatically set after
 
 
 CREATE TABLE "posting" (
+        UNIQUE ("author_id", "id"),  -- index needed for foreign-key on table "posting_lexeme"
         "id"                    SERIAL8         PRIMARY KEY,
         "author_id"             INT4            NOT NULL REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
         "created"               TIMESTAMPTZ     NOT NULL DEFAULT now(),
@@ -1354,6 +1355,17 @@ CREATE INDEX "posting_initiative_idx" ON "posting" USING gist ("initiative_id", 
 CREATE INDEX "posting_suggestion_idx" ON "posting" USING gist ("suggestion_id", (pstamp("author_id", "id"))) WHERE "suggestion_id" NOTNULL;
 
 COMMENT ON TABLE "posting" IS 'Text postings of members; a text posting may optionally be associated to a unit, area, policy, issue, initiative, or suggestion';
+
+
+CREATE TABLE "posting_lexeme" (
+        PRIMARY KEY ("posting_id", "lexeme"),
+        FOREIGN KEY ("posting_id", "author_id") REFERENCES "posting" ("id", "author_id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "posting_id"            INT8,
+        "lexeme"                TEXT,
+        "author_id"             INT4 );
+CREATE INDEX "posting_lexeme_idx" ON "posting_lexeme" USING gist ("lexeme", (pstamp("author_id", "posting_id")));
+
+COMMENT ON TABLE "posting_lexeme" IS 'Helper table to allow searches for hashtags.';
 
 
 CREATE TYPE "event_type" AS ENUM (
@@ -1852,6 +1864,40 @@ CREATE FUNCTION "to_tsvector"("direct_voter") RETURNS TSVECTOR
   )) $$;
 CREATE INDEX ON "direct_voter" USING gin
   (("to_tsvector"("direct_voter".*)));
+
+
+CREATE FUNCTION "update_posting_lexeme_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "lexeme_v" TEXT;
+    BEGIN
+      IF TG_OP = 'DELETE' OR TG_OP = 'UPDATE' THEN
+        DELETE FROM "posting_lexeme" WHERE "posting_id" = OLD."id";
+      END IF;
+      IF TG_OP = 'INSERT' OR TG_OP = 'UPDATE' THEN
+        FOR "lexeme_v" IN
+          SELECT regexp_matches[1]
+          FROM regexp_matches(NEW."message", '#[^\s.,;:]+')
+        LOOP
+          INSERT INTO "posting_lexeme" ("posting_id", "author_id", "lexeme")
+            VALUES (
+              NEW."id",
+              NEW."author_id",
+              "lexeme_v" )
+            ON CONFLICT ("posting_id", "lexeme") DO NOTHING;
+        END LOOP;
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE TRIGGER "update_posting_lexeme"
+  AFTER INSERT OR UPDATE OR DELETE ON "posting"
+  FOR EACH ROW EXECUTE PROCEDURE "update_posting_lexeme_trigger"();
+
+COMMENT ON FUNCTION "update_posting_lexeme_trigger"()  IS 'Implementation of trigger "update_posting_lexeme" on table "posting"';
+COMMENT ON TRIGGER "update_posting_lexeme" ON "posting" IS 'Keeps table "posting_lexeme" up to date';
 
 
 
