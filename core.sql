@@ -1791,7 +1791,7 @@ CREATE FUNCTION "highlight"
     BEGIN
       RETURN ts_headline(
         replace(replace("body_p", e'\\', e'\\\\'), '*', e'\\*'),
-        "text_search_query"("query_text_p"),
+        "plainto_tsquery"("query_text_p"),
         'StartSel=* StopSel=* HighlightAll=TRUE' );
     END;
   $$;
