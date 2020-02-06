@@ -55,17 +55,20 @@ COMMENT ON COLUMN "contingent"."initiative_limit" IS 'Number of new initiatives 
 
 CREATE TABLE "file" (
         "id"                    SERIAL8         PRIMARY KEY,
-        "hash"                  TEXT            NOT NULL UNIQUE,
+        UNIQUE ("content_type", "hash"),
+        "content_type"          TEXT            NOT NULL,
+        "hash"                  TEXT            NOT NULL,
         "data"                  BYTEA           NOT NULL,
-        "preview_data"          BYTEA,
-        "preview_content_type"  TEXT );
+        "preview_content_type"  TEXT,
+        "preview_data"          BYTEA );
 
 COMMENT ON TABLE "file" IS 'Table holding file contents for draft attachments';
 
-COMMENT ON COLUMN "file"."hash"                 IS 'Hash of file contents to avoid storing duplicates';
+COMMENT ON COLUMN "file"."content_type"         IS 'Content type of "data"';
+COMMENT ON COLUMN "file"."hash"                 IS 'Hash of "data" to avoid storing duplicates where content-type and data is identical';
 COMMENT ON COLUMN "file"."data"                 IS 'Binary content';
-COMMENT ON COLUMN "file"."preview_data"         IS 'Preview (e.g. preview image)';
 COMMENT ON COLUMN "file"."preview_content_type" IS 'Content type of "preview_data"';
+COMMENT ON COLUMN "file"."preview_data"         IS 'Preview (e.g. preview image)';
 
 
 CREATE TABLE "member" (
@@ -312,7 +315,7 @@ CREATE TABLE "member_image" (
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "image_type"            "member_image_type",
         "scaled"                BOOLEAN,
-        "content_type"          TEXT,
+        "content_type"          TEXT,  -- TODO: NOT NULL?
         "data"                  BYTEA           NOT NULL );
 
 COMMENT ON TABLE "member_image" IS 'Images of members';
