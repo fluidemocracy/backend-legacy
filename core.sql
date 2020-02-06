@@ -53,6 +53,21 @@ COMMENT ON COLUMN "contingent"."text_entry_limit" IS 'Number of new drafts or su
 COMMENT ON COLUMN "contingent"."initiative_limit" IS 'Number of new initiatives to be opened by each member within a given time frame';
 
 
+CREATE TABLE "file" (
+        "id"                    SERIAL8         PRIMARY KEY,
+        "hash"                  TEXT            NOT NULL UNIQUE,
+        "data"                  BYTEA           NOT NULL,
+        "preview_data"          BYTEA,
+        "preview_content_type"  TEXT );
+
+COMMENT ON TABLE "file" IS 'Table holding file contents for draft attachments';
+
+COMMENT ON COLUMN "file"."hash"                 IS 'Hash of file contents to avoid storing duplicates';
+COMMENT ON COLUMN "file"."data"                 IS 'Binary content';
+COMMENT ON COLUMN "file"."preview_data"         IS 'Preview (e.g. preview image)';
+COMMENT ON COLUMN "file"."preview_content_type" IS 'Content type of "preview_data"';
+
+
 CREATE TABLE "member" (
         "id"                    SERIAL4         PRIMARY KEY,
         "created"               TIMESTAMPTZ     NOT NULL DEFAULT now(),
@@ -994,6 +1009,17 @@ CREATE TABLE "rendered_draft" (
         "content"               TEXT            NOT NULL );
 
 COMMENT ON TABLE "rendered_draft" IS 'This table may be used by frontends to cache "rendered" drafts (e.g. HTML output generated from wiki text)';
+
+
+CREATE TABLE "draft_attachment" (
+        "id"                    SERIAL8         PRIMARY KEY,
+        "draft_id"              INT8            REFERENCES "draft" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "file_id"               INT8            REFERENCES "file" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "content_type"          TEXT,
+        "title"                 TEXT,
+        "description"           TEXT );
+
+COMMENT ON TABLE "draft_attachment" IS 'Binary attachments for a draft (images, PDF file, etc.); Implicitly ordered through ''id'' column';
 
 
 CREATE TABLE "suggestion" (
