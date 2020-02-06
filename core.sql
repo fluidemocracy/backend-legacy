@@ -3162,6 +3162,61 @@ COMMENT ON FUNCTION "voter_comment_fields_only_set_when_voter_comment_is_set_tri
 COMMENT ON TRIGGER "voter_comment_fields_only_set_when_voter_comment_is_set" ON "direct_voter" IS 'If "comment" is set to NULL, then other comment related fields are also set to NULL.';
 
 
+CREATE FUNCTION "file_requires_reference_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT NULL FROM "draft_attachment" WHERE "file_id" = NEW."id"
+      ) THEN
+        RAISE EXCEPTION 'Cannot create an unreferenced file.' USING
+          ERRCODE = 'integrity_constraint_violation',
+          HINT    = 'Create file and its reference in another table within the same transaction.';
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE CONSTRAINT TRIGGER "file_requires_reference"
+  AFTER INSERT OR UPDATE ON "file" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE PROCEDURE
+  "file_requires_reference_trigger"();
+
+COMMENT ON FUNCTION "file_requires_reference_trigger"() IS 'Implementation of trigger "file_requires_reference" on table "file"';
+COMMENT ON TRIGGER "file_requires_reference" ON "file"  IS 'Ensure that files are always referenced';
+
+
+CREATE FUNCTION "last_reference_deletes_file_trigger"()
+  RETURNS TRIGGER
+  LANGUAGE 'plpgsql' VOLATILE AS $$
+    DECLARE
+      "reference_lost" BOOLEAN;
+    BEGIN
+      IF TG_OP = 'DELETE' THEN
+        "reference_lost" := TRUE;
+      ELSE
+        "reference_lost" := NEW."file_id" != OLD."file_id";
+      END IF;
+      IF
+        "reference_lost" AND NOT EXISTS (
+          SELECT NULL FROM "draft_attachment" WHERE "file_id" = OLD."file_id"
+        )
+      THEN
+        DELETE FROM "file" WHERE "id" = OLD."file_id";
+      END IF;
+      RETURN NULL;
+    END;
+  $$;
+
+CREATE CONSTRAINT TRIGGER "last_reference_deletes_file"
+  AFTER UPDATE OR DELETE ON "draft_attachment" DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE PROCEDURE
+  "last_reference_deletes_file_trigger"();
+
+COMMENT ON FUNCTION "last_reference_deletes_file_trigger"()            IS 'Implementation of trigger "last_reference_deletes_file" on table "draft_attachment"';
+COMMENT ON TRIGGER "last_reference_deletes_file" ON "draft_attachment" IS 'Removing the last reference to a file deletes the file';
+
+
 
 ---------------------------------
 -- Delete incomplete snapshots --
