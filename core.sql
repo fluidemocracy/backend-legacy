@@ -8,7 +8,7 @@ CREATE EXTENSION IF NOT EXISTS latlon;
 CREATE EXTENSION IF NOT EXISTS conflux;
 
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('4.1.0', 4, 1, 0))
+  SELECT * FROM (VALUES ('4.2.0', 4, 2, 0))
   AS "subquery"("string", "major", "minor", "revision");
 
 
@@ -1836,16 +1836,15 @@ CREATE FUNCTION "to_tsvector"("member") RETURNS TSVECTOR
     $1."name",
     $1."identification"
   )) $$;
-CREATE INDEX ON "member" USING gin
+CREATE INDEX "member_to_tsvector_idx" ON "member" USING gin
   (("to_tsvector"("member".*)));
-
 
 CREATE FUNCTION "to_tsvector"("member_profile") RETURNS TSVECTOR
   LANGUAGE SQL IMMUTABLE AS $$ SELECT to_tsvector(concat_ws(' ',
     $1."statement",
     $1."profile_text_data"
   )) $$;
-CREATE INDEX ON "member_profile" USING gin
+CREATE INDEX "member_profile_to_tsvector_idx" ON "member_profile" USING gin
   (("to_tsvector"("member_profile".*)));
 
 CREATE FUNCTION "to_tsvector"("unit") RETURNS TSVECTOR
@@ -1853,7 +1852,7 @@ CREATE FUNCTION "to_tsvector"("unit") RETURNS TSVECTOR
     $1."name",
     $1."description"
   )) $$;
-CREATE INDEX ON "unit" USING gin
+CREATE INDEX "unit_to_tsvector_idx" ON "unit" USING gin
   (("to_tsvector"("unit".*)));
 
 CREATE FUNCTION "to_tsvector"("area") RETURNS TSVECTOR
@@ -1861,7 +1860,7 @@ CREATE FUNCTION "to_tsvector"("area") RETURNS TSVECTOR
     $1."name",
     $1."description"
   )) $$;
-CREATE INDEX ON "area" USING gin
+CREATE INDEX "area_to_tsvector_idx" ON "area" USING gin
   (("to_tsvector"("area".*)));
 
 CREATE FUNCTION "to_tsvector"("initiative") RETURNS TSVECTOR
@@ -1869,14 +1868,14 @@ CREATE FUNCTION "to_tsvector"("initiative") RETURNS TSVECTOR
     $1."name",
     $1."content"
   )) $$;
-CREATE INDEX ON "initiative" USING gin
+CREATE INDEX "initiative_to_tsvector_idx" ON "initiative" USING gin
   (("to_tsvector"("initiative".*)));
 
 CREATE FUNCTION "to_tsvector"("draft") RETURNS TSVECTOR
   LANGUAGE SQL IMMUTABLE AS $$ SELECT to_tsvector(concat_ws(' ',
     $1."content"
   )) $$;
-CREATE INDEX ON "draft" USING gin
+CREATE INDEX "draft_to_tsvector_idx" ON "draft" USING gin
   (("to_tsvector"("draft".*)));
 
 CREATE FUNCTION "to_tsvector"("suggestion") RETURNS TSVECTOR
@@ -1884,14 +1883,14 @@ CREATE FUNCTION "to_tsvector"("suggestion") RETURNS TSVECTOR
     $1."name",
     $1."content"
   )) $$;
-CREATE INDEX ON "suggestion" USING gin
+CREATE INDEX "suggestion_to_tsvector_idx" ON "suggestion" USING gin
   (("to_tsvector"("suggestion".*)));
 
 CREATE FUNCTION "to_tsvector"("direct_voter") RETURNS TSVECTOR
   LANGUAGE SQL IMMUTABLE AS $$ SELECT to_tsvector(concat_ws(' ',
     $1."comment"
   )) $$;
-CREATE INDEX ON "direct_voter" USING gin
+CREATE INDEX "direct_voter_to_tsvector_idx" ON "direct_voter" USING gin
   (("to_tsvector"("direct_voter".*)));
 
 
