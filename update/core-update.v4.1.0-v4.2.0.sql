@@ -97,7 +97,6 @@ CREATE TABLE "draft_attachment" (
         "id"                    SERIAL8         PRIMARY KEY,
         "draft_id"              INT8            REFERENCES "draft" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "file_id"               INT8            REFERENCES "file" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
-        "content_type"          TEXT,
         "title"                 TEXT,
         "description"           TEXT );
 
