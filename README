@@ -62,3 +62,8 @@ $ psql -v ON_ERROR_STOP=1 -f tmp.sql DATABASE_NAME
 $ exit         # leave "su" command
 $ rm tmp.sql
 
+NOTE: If PostgreSQL fails to locate the extensions' datatypes, it may
+      be necessary to add 'public' to the 'search_path' variable in
+      the data-only export (tmp.sql in the example above), which is
+      set by the function call pg_catalog.set_config(...).
+
