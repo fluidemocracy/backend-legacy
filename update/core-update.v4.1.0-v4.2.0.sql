@@ -1,12 +1,8 @@
-BEGIN;
-
 CREATE OR REPLACE VIEW "liquid_feedback_version" AS
   SELECT * FROM (VALUES ('4.2.0-incomplete-update', 4, 2, -1))
   AS "subquery"("string", "major", "minor", "revision");
 
 ALTER TYPE "event_type" ADD VALUE IF NOT EXISTS 'posting_created';
-
-COMMIT;
 
 BEGIN;
 
