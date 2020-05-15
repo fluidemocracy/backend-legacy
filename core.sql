@@ -636,6 +636,7 @@ CREATE TABLE "unit" (
         "description"           TEXT            NOT NULL DEFAULT '',  -- full text search
         "external_reference"    TEXT,
         "member_count"          INT4,
+        "member_weight"         INT4,
         "location"              JSONB );
 CREATE INDEX "unit_root_idx" ON "unit" ("id") WHERE "parent_id" ISNULL;
 CREATE INDEX "unit_parent_id_idx" ON "unit" ("parent_id");
@@ -648,6 +649,7 @@ COMMENT ON COLUMN "unit"."parent_id"          IS 'Parent id of tree node; Multip
 COMMENT ON COLUMN "unit"."active"             IS 'TRUE means new issues can be created in areas of this unit';
 COMMENT ON COLUMN "unit"."external_reference" IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "unit"."member_count"       IS 'Count of members as determined by column "voting_right" in table "privilege" (only active members counted)';
+COMMENT ON COLUMN "unit"."member_weight"      IS 'Sum of active member''s voting weight';
 COMMENT ON COLUMN "unit"."location"           IS 'Geographic location on earth as GeoJSON object indicating valid coordinates for initiatives of issues with this policy';
 
 
@@ -728,7 +730,8 @@ COMMENT ON TABLE "snapshot" IS 'Point in time when a snapshot of one or more iss
 CREATE TABLE "snapshot_population" (
         PRIMARY KEY ("snapshot_id", "member_id"),
         "snapshot_id"           INT8            REFERENCES "snapshot" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
-        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE );
+        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+        "weight"                INT4            NOT NULL );
 
 COMMENT ON TABLE "snapshot_population" IS 'Members with voting right relevant for a snapshot';
 
@@ -1101,7 +1104,8 @@ CREATE TABLE "privilege" (
         "member_manager"        BOOLEAN         NOT NULL DEFAULT FALSE,
         "initiative_right"      BOOLEAN         NOT NULL DEFAULT TRUE,
         "voting_right"          BOOLEAN         NOT NULL DEFAULT TRUE,
-        "polling_right"         BOOLEAN         NOT NULL DEFAULT FALSE );
+        "polling_right"         BOOLEAN         NOT NULL DEFAULT FALSE,
+        "weight"                INT4            NOT NULL DEFAULT 1 CHECK ("weight" >= 0) );
 
 COMMENT ON TABLE "privilege" IS 'Members rights related to each unit';
 
@@ -1112,6 +1116,7 @@ COMMENT ON COLUMN "privilege"."member_manager"   IS 'Adding/removing members fro
 COMMENT ON COLUMN "privilege"."initiative_right" IS 'Right to create an initiative';
 COMMENT ON COLUMN "privilege"."voting_right"     IS 'Right to support initiatives, create and rate suggestions, and to vote';
 COMMENT ON COLUMN "privilege"."polling_right"    IS 'Right to create issues with policies having the "policy"."polling" flag set, and to add initiatives having the "initiative"."polling" flag set to those issues';
+COMMENT ON COLUMN "privilege"."weight"           IS 'Voting weight of member in unit';
 
 
 CREATE TABLE "interest" (
@@ -1218,12 +1223,14 @@ CREATE TABLE "direct_interest_snapshot" (
         FOREIGN KEY ("snapshot_id", "issue_id")
           REFERENCES "snapshot_issue" ("snapshot_id", "issue_id") ON DELETE CASCADE ON UPDATE CASCADE,
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE RESTRICT,
+        "ownweight"             INT4            NOT NULL,
         "weight"                INT4 );
 CREATE INDEX "direct_interest_snapshot_member_id_idx" ON "direct_interest_snapshot" ("member_id");
 
 COMMENT ON TABLE "direct_interest_snapshot" IS 'Snapshot of active members having an "interest" in the "issue"; for corrections refer to column "issue_notice" of "issue" table';
 
-COMMENT ON COLUMN "direct_interest_snapshot"."weight" IS 'Weight of member (1 or higher) according to "delegating_interest_snapshot"';
+COMMENT ON COLUMN "direct_interest_snapshot"."ownweight" IS 'Own voting weight of member, disregading delegations';
+COMMENT ON COLUMN "direct_interest_snapshot"."weight"    IS 'Voting weight of member according to own weight and "delegating_interest_snapshot"';
 
 
 CREATE TABLE "delegating_interest_snapshot" (
@@ -1233,6 +1240,7 @@ CREATE TABLE "delegating_interest_snapshot" (
         FOREIGN KEY ("snapshot_id", "issue_id")
           REFERENCES "snapshot_issue" ("snapshot_id", "issue_id") ON DELETE CASCADE ON UPDATE CASCADE,
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE RESTRICT,
+        "ownweight"             INT4            NOT NULL,
         "weight"                INT4,
         "scope"              "delegation_scope" NOT NULL,
         "delegate_member_ids"   INT4[]          NOT NULL );
@@ -1241,7 +1249,8 @@ CREATE INDEX "delegating_interest_snapshot_member_id_idx" ON "delegating_interes
 COMMENT ON TABLE "delegating_interest_snapshot" IS 'Delegations increasing the weight of entries in the "direct_interest_snapshot" table; for corrections refer to column "issue_notice" of "issue" table';
 
 COMMENT ON COLUMN "delegating_interest_snapshot"."member_id"           IS 'Delegating member';
-COMMENT ON COLUMN "delegating_interest_snapshot"."weight"              IS 'Intermediate weight';
+COMMENT ON COLUMN "delegating_interest_snapshot"."ownweight"           IS 'Own voting weight of member, disregading delegations';
+COMMENT ON COLUMN "delegating_interest_snapshot"."weight"              IS 'Intermediate voting weight considering incoming delegations';
 COMMENT ON COLUMN "delegating_interest_snapshot"."delegate_member_ids" IS 'Chain of members who act as delegates; last entry referes to "member_id" column of table "direct_interest_snapshot"';
 
 
@@ -1281,6 +1290,7 @@ CREATE TABLE "direct_voter" (
         PRIMARY KEY ("issue_id", "member_id"),
         "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE RESTRICT,
+        "ownweight"             INT4,
         "weight"                INT4,
         "comment_changed"       TIMESTAMPTZ,
         "formatting_engine"     TEXT,
@@ -1289,7 +1299,8 @@ CREATE INDEX "direct_voter_member_id_idx" ON "direct_voter" ("member_id");
 
 COMMENT ON TABLE "direct_voter" IS 'Members having directly voted for/against initiatives of an issue; frontends must ensure that no voters are added or removed to/from this table when the issue has been closed; for corrections refer to column "issue_notice" of "issue" table';
 
-COMMENT ON COLUMN "direct_voter"."weight"            IS 'Weight of member (1 or higher) according to "delegating_voter" table';
+COMMENT ON COLUMN "direct_voter"."ownweight"         IS 'Own voting weight of member, disregarding delegations';
+COMMENT ON COLUMN "direct_voter"."weight"            IS 'Voting weight of member according to own weight and "delegating_interest_snapshot"';
 COMMENT ON COLUMN "direct_voter"."comment_changed"   IS 'Shall be set on comment change, to indicate a comment being modified after voting has been finished; Automatically set to NULL after voting phase; Automatically set to NULL by trigger, if "comment" is set to NULL';
 COMMENT ON COLUMN "direct_voter"."formatting_engine" IS 'Allows different formatting engines (i.e. wiki formats) to be used for "direct_voter"."comment"; Automatically set to NULL by trigger, if "comment" is set to NULL';
 COMMENT ON COLUMN "direct_voter"."comment"           IS 'Is to be set or updated by the frontend, if comment was inserted or updated AFTER the issue has been closed. Otherwise it shall be set to NULL.';
@@ -1312,6 +1323,7 @@ CREATE TABLE "delegating_voter" (
         PRIMARY KEY ("issue_id", "member_id"),
         "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
         "member_id"             INT4            REFERENCES "member" ("id") ON DELETE RESTRICT ON UPDATE RESTRICT,
+        "ownweight"             INT4            NOT NULL,
         "weight"                INT4,
         "scope"              "delegation_scope" NOT NULL,
         "delegate_member_ids"   INT4[]          NOT NULL );
@@ -1320,7 +1332,8 @@ CREATE INDEX "delegating_voter_member_id_idx" ON "delegating_voter" ("member_id"
 COMMENT ON TABLE "delegating_voter" IS 'Delegations increasing the weight of entries in the "direct_voter" table; for corrections refer to column "issue_notice" of "issue" table';
 
 COMMENT ON COLUMN "delegating_voter"."member_id"           IS 'Delegating member';
-COMMENT ON COLUMN "delegating_voter"."weight"              IS 'Intermediate weight';
+COMMENT ON COLUMN "delegating_voter"."ownweight"           IS 'Own voting weight of member, disregarding delegations';
+COMMENT ON COLUMN "delegating_voter"."weight"              IS 'Intermediate voting weight considering incoming delegations';
 COMMENT ON COLUMN "delegating_voter"."delegate_member_ids" IS 'Chain of members who act as delegates; last entry referes to "member_id" column of table "direct_voter"';
 
 
@@ -3726,6 +3739,7 @@ CREATE VIEW "issue_delegation" AS
     "delegation"."id",
     "delegation"."truster_id",
     "delegation"."trustee_id",
+    "privilege"."weight",
     "delegation"."scope"
   FROM "issue"
   JOIN "area"
@@ -3757,7 +3771,8 @@ COMMENT ON VIEW "member_count_view" IS 'View used to update "member_count" table
 CREATE VIEW "unit_member" AS
   SELECT
     "unit"."id"   AS "unit_id",
-    "member"."id" AS "member_id"
+    "member"."id" AS "member_id",
+    "privilege"."weight"
   FROM "privilege"
   JOIN "unit"   ON "unit"."id"   = "privilege"."unit_id"
   JOIN "member" ON "member"."id" = "privilege"."member_id"
@@ -3769,7 +3784,8 @@ COMMENT ON VIEW "unit_member" IS 'Active members with voting right in a unit';
 CREATE VIEW "unit_member_count" AS
   SELECT
     "unit"."id" AS "unit_id",
-    count("unit_member"."member_id") AS "member_count"
+    count("unit_member"."member_id") AS "member_count",
+    sum("unit_member"."weight") AS "member_weight"
   FROM "unit" LEFT JOIN "unit_member"
   ON "unit"."id" = "unit_member"."unit_id"
   GROUP BY "unit"."id";
@@ -5047,14 +5063,16 @@ CREATE FUNCTION "calculate_member_counts"()
       DELETE FROM "member_count";
       INSERT INTO "member_count" ("total_count")
         SELECT "total_count" FROM "member_count_view";
-      UPDATE "unit" SET "member_count" = "view"."member_count"
+      UPDATE "unit" SET
+        "member_count" = "view"."member_count",
+        "member_weight" = "view"."member_weight"
         FROM "unit_member_count" AS "view"
         WHERE "view"."unit_id" = "unit"."id";
       RETURN;
     END;
   $$;
 
-COMMENT ON FUNCTION "calculate_member_counts"() IS 'Updates "member_count" table and "member_count" column of table "area" by materializing data from views "member_count_view" and "unit_member_count"';
+COMMENT ON FUNCTION "calculate_member_counts"() IS 'Updates "member_count" table and "member_count" and "member_weight" columns of table "area" by materializing data from views "member_count_view" and "unit_member_count"';
 
 
 
@@ -5264,16 +5282,18 @@ CREATE FUNCTION "weight_of_added_delegations_for_snapshot"
               "snapshot_id",
               "issue_id",
               "member_id",
+              "ownweight",
               "scope",
               "delegate_member_ids"
             ) VALUES (
               "snapshot_id_p",
               "issue_id_p",
               "issue_delegation_row"."truster_id",
+              "issue_delegation_row"."weight",
               "issue_delegation_row"."scope",
               "delegate_member_ids_v"
             );
-          "sub_weight_v" := 1 +
+          "sub_weight_v" := "issue_delegation_row"."weight" +
             "weight_of_added_delegations_for_snapshot"(
               "snapshot_id_p",
               "issue_id_p",
@@ -5326,12 +5346,12 @@ CREATE FUNCTION "take_snapshot"
       INSERT INTO "snapshot" ("area_id", "issue_id")
         VALUES ("area_id_v", "issue_id_p")
         RETURNING "id" INTO "snapshot_id_v";
-      INSERT INTO "snapshot_population" ("snapshot_id", "member_id")
-        SELECT "snapshot_id_v", "member_id"
+      INSERT INTO "snapshot_population" ("snapshot_id", "member_id", "weight")
+        SELECT "snapshot_id_v", "member_id", "weight"
         FROM "unit_member" WHERE "unit_id" = "unit_id_v";
       UPDATE "snapshot" SET
         "population" = (
-          SELECT count(1) FROM "snapshot_population"
+          SELECT sum("weight") FROM "snapshot_population"
           WHERE "snapshot_id" = "snapshot_id_v"
         ) WHERE "id" = "snapshot_id_v";
       FOR "issue_id_v" IN
@@ -5346,11 +5366,12 @@ CREATE FUNCTION "take_snapshot"
         INSERT INTO "snapshot_issue" ("snapshot_id", "issue_id")
           VALUES ("snapshot_id_v", "issue_id_v");
         INSERT INTO "direct_interest_snapshot"
-          ("snapshot_id", "issue_id", "member_id")
+          ("snapshot_id", "issue_id", "member_id", "ownweight")
           SELECT
             "snapshot_id_v" AS "snapshot_id",
             "issue_id_v"    AS "issue_id",
-            "member"."id"   AS "member_id"
+            "member"."id"   AS "member_id",
+            "privilege"."weight" AS "ownweight"
           FROM "issue"
           JOIN "area" ON "issue"."area_id" = "area"."id"
           JOIN "interest" ON "issue"."id" = "interest"."issue_id"
@@ -5366,7 +5387,7 @@ CREATE FUNCTION "take_snapshot"
           AND "issue_id" = "issue_id_v"
         LOOP
           UPDATE "direct_interest_snapshot" SET
-            "weight" = 1 +
+            "weight" = "ownweight" +
               "weight_of_added_delegations_for_snapshot"(
                 "snapshot_id_v",
                 "issue_id_v",
@@ -5641,15 +5662,17 @@ CREATE FUNCTION "weight_of_added_vote_delegations"
           INSERT INTO "delegating_voter" (
               "issue_id",
               "member_id",
+              "ownweight",
               "scope",
               "delegate_member_ids"
             ) VALUES (
               "issue_id_p",
               "issue_delegation_row"."truster_id",
+              "issue_delegation_row"."weight",
               "issue_delegation_row"."scope",
               "delegate_member_ids_v"
             );
-          "sub_weight_v" := 1 +
+          "sub_weight_v" := "issue_delegation_row"."weight" +
             "weight_of_added_vote_delegations"(
               "issue_id_p",
               "issue_delegation_row"."truster_id",
@@ -5686,7 +5709,7 @@ CREATE FUNCTION "add_vote_delegations"
         WHERE "issue_id" = "issue_id_p"
       LOOP
         UPDATE "direct_voter" SET
-          "weight" = "weight" + "weight_of_added_vote_delegations"(
+          "weight" = "ownweight" + "weight_of_added_vote_delegations"(
             "issue_id_p",
             "member_id_v",
             '{}'
@@ -5726,8 +5749,7 @@ CREATE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
       -- delete votes from non-privileged voters:
       DELETE FROM "direct_voter"
         USING (
-          SELECT
-            "direct_voter"."member_id"
+          SELECT "direct_voter"."member_id"
           FROM "direct_voter"
           JOIN "member" ON "direct_voter"."member_id" = "member"."id"
           LEFT JOIN "privilege"
@@ -5741,9 +5763,12 @@ CREATE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
         ) AS "subquery"
         WHERE "direct_voter"."issue_id" = "issue_id_p"
         AND "direct_voter"."member_id" = "subquery"."member_id";
-      -- consider delegations:
-      UPDATE "direct_voter" SET "weight" = 1
-        WHERE "issue_id" = "issue_id_p";
+      -- consider voting weight and delegations:
+      UPDATE "direct_voter" SET "ownweight" = "privilege"."weight"
+        FROM "privilege"
+        WHERE "issue_id" = "issue_id_p"
+        AND "privilege"."unit_id" = "unit_id_v"
+        AND "privilege"."member_id" = "direct_voter"."member_id";
       PERFORM "add_vote_delegations"("issue_id_p");
       -- mark first preferences:
       UPDATE "vote" SET "first_preference" = "subquery"."first_preference"
