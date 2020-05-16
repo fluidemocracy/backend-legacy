@@ -4629,7 +4629,7 @@ CREATE FUNCTION "delegation_chain"
           WHERE "id" = "output_row"."member_id"
           AND "member"."active"
           AND COALESCE(
-            "issue_privilege"."voting_weight", "privilege"."voting_right")
+            "issue_privilege"."voting_right", "privilege"."voting_right")
         );
         "simulate_here_v" := (
           "simulate_v" AND
