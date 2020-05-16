@@ -1119,6 +1119,19 @@ COMMENT ON COLUMN "privilege"."polling_right"    IS 'Right to create issues with
 COMMENT ON COLUMN "privilege"."weight"           IS 'Voting weight of member in unit';
 
 
+CREATE TABLE "issue_privilege" (
+        PRIMARY KEY ("issue_id", "member_id"),
+        "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "member_id"             INT4            REFERENCES "member" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+        "initiative_right"      BOOLEAN,
+        "voting_right"          BOOLEAN,
+        "polling_right"         BOOLEAN,
+        "weight"                INT4            CHECK ("weight" >= 0) );
+CREATE INDEX "issue_privilege_idx" ON "issue_privilege" ("member_id");
+
+COMMENT ON TABLE "issue_privilege" IS 'Override of "privilege" table for rights of members in certain issues';
+
+
 CREATE TABLE "interest" (
         PRIMARY KEY ("issue_id", "member_id"),
         "issue_id"              INT4            REFERENCES "issue" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
@@ -3739,7 +3752,7 @@ CREATE VIEW "issue_delegation" AS
     "delegation"."id",
     "delegation"."truster_id",
     "delegation"."trustee_id",
-    "privilege"."weight",
+    COALESCE("issue_privilege"."weight", "privilege"."weight") AS "weight",
     "delegation"."scope"
   FROM "issue"
   JOIN "area"
@@ -3750,10 +3763,14 @@ CREATE VIEW "issue_delegation" AS
     OR "delegation"."issue_id" = "issue"."id"
   JOIN "member"
     ON "delegation"."truster_id" = "member"."id"
-  JOIN "privilege"
+  LEFT JOIN "privilege"
     ON "area"."unit_id" = "privilege"."unit_id"
     AND "delegation"."truster_id" = "privilege"."member_id"
-  WHERE "member"."active" AND "privilege"."voting_right"
+  LEFT JOIN "issue_privilege"
+    ON "issue"."id" = "issue_privilege"."issue_id"
+    AND "delegation"."truster_id" = "issue_privilege"."member_id"
+  WHERE "member"."active"
+  AND COALESCE("issue_privilege"."voting_right", "privilege"."voting_right")
   ORDER BY
     "issue"."id",
     "delegation"."truster_id",
@@ -3770,12 +3787,10 @@ COMMENT ON VIEW "member_count_view" IS 'View used to update "member_count" table
 
 CREATE VIEW "unit_member" AS
   SELECT
-    "unit"."id"   AS "unit_id",
-    "member"."id" AS "member_id",
+    "privilege"."unit_id" AS "unit_id",
+    "member"."id"         AS "member_id",
     "privilege"."weight"
-  FROM "privilege"
-  JOIN "unit"   ON "unit"."id"   = "privilege"."unit_id"
-  JOIN "member" ON "member"."id" = "privilege"."member_id"
+  FROM "privilege" JOIN "member" ON "member"."id" = "privilege"."member_id"
   WHERE "privilege"."voting_right" AND "member"."active";
 
 COMMENT ON VIEW "unit_member" IS 'Active members with voting right in a unit';
@@ -4029,8 +4044,10 @@ CREATE VIEW "event_for_notification" AS
   JOIN "area" ON "area"."id" = "issue"."area_id"
   LEFT JOIN "privilege" ON
     "privilege"."member_id" = "member"."id" AND
-    "privilege"."unit_id" = "area"."unit_id" AND
-    "privilege"."voting_right" = TRUE
+    "privilege"."unit_id" = "area"."unit_id"
+  LEFT JOIN "issue_privilege" ON
+    "issue_privilege"."member_id" = "member"."id" AND
+    "issue_privilege"."issue_id" = "event"."issue_id"
   LEFT JOIN "subscription" ON
     "subscription"."member_id" = "member"."id" AND
     "subscription"."unit_id" = "area"."unit_id"
@@ -4043,8 +4060,10 @@ CREATE VIEW "event_for_notification" AS
   LEFT JOIN "supporter" ON
     "supporter"."member_id" = "member"."id" AND
     "supporter"."initiative_id" = "event"."initiative_id"
-  WHERE ("privilege"."member_id" NOTNULL OR "subscription"."member_id" NOTNULL)
-  AND ("ignored_area"."member_id" ISNULL OR "interest"."member_id" NOTNULL)
+  WHERE (
+    COALESCE("issue_privilege"."voting_right", "privilege"."voting_right") OR
+    "subscription"."member_id" NOTNULL
+  ) AND ("ignored_area"."member_id" ISNULL OR "interest"."member_id" NOTNULL)
   AND (
     "event"."event" = 'issue_state_changed'::"event_type" OR
     ( "event"."event" = 'initiative_revoked'::"event_type" AND
@@ -4151,8 +4170,10 @@ CREATE FUNCTION "featured_initiative"
               "self_support"."member_id" = "recipient_id_p"
             LEFT JOIN "privilege" ON
               "privilege"."member_id" = "recipient_id_p" AND
-              "privilege"."unit_id" = "area"."unit_id" AND
-              "privilege"."voting_right" = TRUE
+              "privilege"."unit_id" = "area"."unit_id"
+            LEFT JOIN "issue_privilege" ON
+              "privilege"."member_id" = "recipient_id_p" AND
+              "privilege"."issue_id" = "initiative"."issue_id"
             LEFT JOIN "subscription" ON
               "subscription"."member_id" = "recipient_id_p" AND
               "subscription"."unit_id" = "area"."unit_id"
@@ -4166,8 +4187,9 @@ CREATE FUNCTION "featured_initiative"
             AND "self_support"."member_id" ISNULL
             AND NOT "initiative_id_ary" @> ARRAY["initiative"."id"]
             AND (
-              "privilege"."member_id" NOTNULL OR
-              "subscription"."member_id" NOTNULL )
+              COALESCE(
+                "issue_privilege"."voting_right", "privilege"."voting_right"
+              ) OR "subscription"."member_id" NOTNULL )
             AND "ignored_initiative"."member_id" ISNULL
             AND NOT EXISTS (
               SELECT NULL FROM "draft"
@@ -4597,11 +4619,17 @@ CREATE FUNCTION "delegation_chain"
         END IF;
         "output_row"."scope_in" := "output_row"."scope_out";
         "output_row"."member_valid" := EXISTS (
-          SELECT NULL FROM "member" JOIN "privilege"
+          SELECT NULL FROM "member"
+          LEFT JOIN "privilege"
           ON "privilege"."member_id" = "member"."id"
           AND "privilege"."unit_id" = "unit_id_v"
+          LEFT JOIN "issue_privilege"
+          ON "issue_privilege"."member_id" = "member"."id"
+          AND "issue_privilege"."issue_id" = "issue_id_p"
           WHERE "id" = "output_row"."member_id"
-          AND "member"."active" AND "privilege"."voting_right"
+          AND "member"."active"
+          AND COALESCE(
+            "issue_privilege"."voting_weight", "privilege"."voting_right")
         );
         "simulate_here_v" := (
           "simulate_v" AND
@@ -5347,8 +5375,19 @@ CREATE FUNCTION "take_snapshot"
         VALUES ("area_id_v", "issue_id_p")
         RETURNING "id" INTO "snapshot_id_v";
       INSERT INTO "snapshot_population" ("snapshot_id", "member_id", "weight")
-        SELECT "snapshot_id_v", "member_id", "weight"
-        FROM "unit_member" WHERE "unit_id" = "unit_id_v";
+        SELECT
+          "snapshot_id_v",
+          "member"."id",
+          COALESCE("issue_privilege"."weight", "privilege"."weight")
+        FROM "member"
+        LEFT JOIN "privilege"
+        ON "privilege"."unit_id" = "unit_id_v"
+        AND "privilege"."member_id" = "member"."id"
+        LEFT JOIN "issue_privilege"
+        ON "issue_privilege"."issue_id" = "issue_id_v"
+        AND "issue_privilege"."member_id" = "member"."id"
+        WHERE "member"."active" AND COALESCE(
+          "issue_privilege"."voting_right", "privilege"."voting_right");
       UPDATE "snapshot" SET
         "population" = (
           SELECT sum("weight") FROM "snapshot_population"
@@ -5371,16 +5410,22 @@ CREATE FUNCTION "take_snapshot"
             "snapshot_id_v" AS "snapshot_id",
             "issue_id_v"    AS "issue_id",
             "member"."id"   AS "member_id",
-            "privilege"."weight" AS "ownweight"
+            COALESCE(
+              "issue_privilege"."weight", "privilege"."weight"
+            ) AS "ownweight"
           FROM "issue"
           JOIN "area" ON "issue"."area_id" = "area"."id"
           JOIN "interest" ON "issue"."id" = "interest"."issue_id"
           JOIN "member" ON "interest"."member_id" = "member"."id"
-          JOIN "privilege"
+          LEFT JOIN "privilege"
             ON "privilege"."unit_id" = "area"."unit_id"
             AND "privilege"."member_id" = "member"."id"
+          LEFT JOIN "issue_privilege"
+            ON "issue_privilege"."issue_id" = "issue_id_v"
+            AND "issue_privilege"."member_id" = "member"."id"
           WHERE "issue"."id" = "issue_id_v"
-          AND "member"."active" AND "privilege"."voting_right";
+          AND "member"."active" AND COALESCE(
+            "issue_privilege"."voting_right", "privilege"."voting_right");
         FOR "member_id_v" IN
           SELECT "member_id" FROM "direct_interest_snapshot"
           WHERE "snapshot_id" = "snapshot_id_v"
@@ -5755,10 +5800,16 @@ CREATE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
           LEFT JOIN "privilege"
           ON "privilege"."unit_id" = "unit_id_v"
           AND "privilege"."member_id" = "direct_voter"."member_id"
+          LEFT JOIN "issue_privilege"
+          ON "issue_privilege"."issue_id" = "issue_id_p"
+          AND "issue_privilege"."member_id" = "direct_voter"."member_id"
           WHERE "direct_voter"."issue_id" = "issue_id_p" AND (
             "member"."active" = FALSE OR
-            "privilege"."voting_right" ISNULL OR
-            "privilege"."voting_right" = FALSE
+            COALESCE(
+              "issue_privilege"."voting_right",
+              "privilege"."voting_right",
+              FALSE
+            ) = FALSE
           )
         ) AS "subquery"
         WHERE "direct_voter"."issue_id" = "issue_id_p"
@@ -5769,6 +5820,11 @@ CREATE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
         WHERE "issue_id" = "issue_id_p"
         AND "privilege"."unit_id" = "unit_id_v"
         AND "privilege"."member_id" = "direct_voter"."member_id";
+      UPDATE "direct_voter" SET "ownweight" = "issue_privilege"."weight"
+        FROM "issue_privilege"
+        WHERE "direct_voter"."issue_id" = "issue_id_p"
+        AND "issue_privilege"."issue_id" = "issue_id_p"
+        AND "issue_privilege"."member_id" = "direct_voter"."member_id";
       PERFORM "add_vote_delegations"("issue_id_p");
       -- mark first preferences:
       UPDATE "vote" SET "first_preference" = "subquery"."first_preference"
