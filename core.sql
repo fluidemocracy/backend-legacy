@@ -649,7 +649,7 @@ COMMENT ON COLUMN "unit"."parent_id"          IS 'Parent id of tree node; Multip
 COMMENT ON COLUMN "unit"."active"             IS 'TRUE means new issues can be created in areas of this unit';
 COMMENT ON COLUMN "unit"."external_reference" IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "unit"."member_count"       IS 'Count of members as determined by column "voting_right" in table "privilege" (only active members counted)';
-COMMENT ON COLUMN "unit"."member_weight"      IS 'Sum of active member''s voting weight';
+COMMENT ON COLUMN "unit"."member_weight"      IS 'Sum of active members'' voting weight';
 COMMENT ON COLUMN "unit"."location"           IS 'Geographic location on earth as GeoJSON object indicating valid coordinates for initiatives of issues with this policy';
 
 
