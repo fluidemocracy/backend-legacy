@@ -5384,7 +5384,7 @@ CREATE FUNCTION "take_snapshot"
         ON "privilege"."unit_id" = "unit_id_v"
         AND "privilege"."member_id" = "member"."id"
         LEFT JOIN "issue_privilege"
-        ON "issue_privilege"."issue_id" = "issue_id_v"
+        ON "issue_privilege"."issue_id" = "issue_id_p"
         AND "issue_privilege"."member_id" = "member"."id"
         WHERE "member"."active" AND COALESCE(
           "issue_privilege"."voting_right", "privilege"."voting_right");
