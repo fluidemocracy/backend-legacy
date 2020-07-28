@@ -4,6 +4,9 @@ CREATE OR REPLACE VIEW "liquid_feedback_version" AS
 
 BEGIN;
 
+ALTER TABLE "unit" ADD COLUMN "attr" JSONB NOT NULL DEFAULT '{}' CHECK (jsonb_typeof("attr") = 'object');
+COMMENT ON COLUMN "unit"."attr" IS 'Opaque data structure to store any extended attributes used by frontend or middleware';
+
 ALTER TABLE "unit" ADD COLUMN "member_weight" INT4;
 COMMENT ON COLUMN "unit"."member_weight" IS 'Sum of active members'' voting weight';
 

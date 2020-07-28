@@ -634,7 +634,8 @@ CREATE TABLE "unit" (
         "active"                BOOLEAN         NOT NULL DEFAULT TRUE,
         "name"                  TEXT            NOT NULL,  -- full text search
         "description"           TEXT            NOT NULL DEFAULT '',  -- full text search
-        "external_reference"    TEXT,
+        "attr"                  JSONB           NOT NULL DEFAULT '{}' CHECK (jsonb_typeof("attr") = 'object'),
+        "external_reference"    TEXT,  -- TODO: move external_reference to attr (also for area, issue, etc.)
         "member_count"          INT4,
         "member_weight"         INT4,
         "location"              JSONB );
@@ -647,6 +648,7 @@ COMMENT ON TABLE "unit" IS 'Organizational units organized as trees; Delegations
 
 COMMENT ON COLUMN "unit"."parent_id"          IS 'Parent id of tree node; Multiple roots allowed';
 COMMENT ON COLUMN "unit"."active"             IS 'TRUE means new issues can be created in areas of this unit';
+COMMENT ON COLUMN "unit"."attr"               IS 'Opaque data structure to store any extended attributes used by frontend or middleware';
 COMMENT ON COLUMN "unit"."external_reference" IS 'Opaque data field to store an external reference';
 COMMENT ON COLUMN "unit"."member_count"       IS 'Count of members as determined by column "voting_right" in table "privilege" (only active members counted)';
 COMMENT ON COLUMN "unit"."member_weight"      IS 'Sum of active members'' voting weight';
