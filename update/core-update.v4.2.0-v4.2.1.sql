@@ -184,8 +184,8 @@ CREATE OR REPLACE FUNCTION "featured_initiative"
               "privilege"."member_id" = "recipient_id_p" AND
               "privilege"."unit_id" = "area"."unit_id"
             LEFT JOIN "issue_privilege" ON
-              "privilege"."member_id" = "recipient_id_p" AND
-              "privilege"."issue_id" = "initiative"."issue_id"
+              "issue_privilege"."member_id" = "recipient_id_p" AND
+              "issue_privilege"."issue_id" = "initiative"."issue_id"
             LEFT JOIN "subscription" ON
               "subscription"."member_id" = "recipient_id_p" AND
               "subscription"."unit_id" = "area"."unit_id"
