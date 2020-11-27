@@ -1386,6 +1386,7 @@ CREATE TABLE "posting" (
         FOREIGN KEY ("area_id", "issue_id") REFERENCES "issue" ("area_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
         FOREIGN KEY ("policy_id", "issue_id") REFERENCES "issue" ("policy_id", "id") ON DELETE CASCADE ON UPDATE CASCADE,
         "initiative_id"         INT4,
+        FOREIGN KEY ("issue_id", "initiative_id") REFERENCES "initiative" ("issue_id", "id"),
         "suggestion_id"         INT8,
         -- NOTE: no referential integrity for suggestions because those are
         --       actually deleted

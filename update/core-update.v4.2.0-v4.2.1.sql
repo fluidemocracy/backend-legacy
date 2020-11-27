@@ -47,6 +47,8 @@ ALTER TABLE "delegating_voter" ALTER COLUMN "ownweight" DROP DEFAULT;
 COMMENT ON COLUMN "delegating_voter"."ownweight" IS 'Own voting weight of member, disregarding delegations';
 COMMENT ON COLUMN "delegating_voter"."weight"    IS 'Intermediate voting weight considering incoming delegations';
 
+ALTER TABLE "posting" ADD FOREIGN KEY ("issue_id", "initiative_id") REFERENCES "initiative" ("issue_id", "id");
+
 DROP VIEW "issue_delegation";
 CREATE VIEW "issue_delegation" AS
   SELECT DISTINCT ON ("issue"."id", "delegation"."truster_id")
