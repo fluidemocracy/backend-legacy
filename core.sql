@@ -1402,6 +1402,10 @@ CREATE TABLE "posting" (
         CONSTRAINT "suggestion_requires_initiative" CHECK (
           "suggestion_id" ISNULL OR "initiative_id" NOTNULL ) );
 
+-- TODO: Table "posting" and associated objects still require proper indexing
+-- support. Preliminary indexing support was provided by Core version 4.2.0
+-- (using pgConflux up to version 0.5) but has been removed in version 4.2.1.
+
 COMMENT ON TABLE "posting" IS 'Text postings of members; a text posting may optionally be associated to a unit, area, policy, issue, initiative, or suggestion';
 
 
