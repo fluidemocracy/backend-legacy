@@ -1,8 +1,8 @@
-CREATE OR REPLACE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('4.2.1-incomplete-update', 4, 2, -1))
-  AS "subquery"("string", "major", "minor", "revision");
-
 BEGIN;
+
+CREATE OR REPLACE VIEW "liquid_feedback_version" AS
+  SELECT * FROM (VALUES ('4.2.1', 4, 2, 1))
+  AS "subquery"("string", "major", "minor", "revision");
 
 ALTER TABLE "unit" ADD COLUMN "attr" JSONB NOT NULL DEFAULT '{}' CHECK (jsonb_typeof("attr") = 'object');
 COMMENT ON COLUMN "unit"."attr" IS 'Opaque data structure to store any extended attributes used by frontend or middleware';
@@ -969,5 +969,26 @@ CREATE OR REPLACE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
         AND "initiative"."id" = "subquery"."initiative_id";
     END;
   $$;
+
+DROP INDEX "posting_global_idx";
+DROP INDEX "posting_unit_idx";
+DROP INDEX "posting_area_idx";
+DROP INDEX "posting_policy_idx";
+DROP INDEX "posting_issue_idx";
+DROP INDEX "posting_initiative_idx";
+DROP INDEX "posting_suggestion_idx";
+ 
+DROP INDEX "posting_lexeme_idx";
+
+DROP INDEX "event_tl_global_idx";
+DROP INDEX "event_tl_unit_idx";
+DROP INDEX "event_tl_area_idx";
+DROP INDEX "event_tl_policy_idx";
+DROP INDEX "event_tl_issue_idx";
+DROP INDEX "event_tl_initiative_idx";
+DROP INDEX "event_tl_suggestion_idx";
+ 
+DROP EXTENSION IF EXISTS conflux;
+DROP EXTENSION IF EXISTS btree_gist;
 
 COMMIT;

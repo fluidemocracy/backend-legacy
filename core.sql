@@ -3,12 +3,10 @@
 
 BEGIN;
 
-CREATE EXTENSION IF NOT EXISTS btree_gist;
 CREATE EXTENSION IF NOT EXISTS latlon;
-CREATE EXTENSION IF NOT EXISTS conflux;
 
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('4.2.0', 4, 2, 0))
+  SELECT * FROM (VALUES ('4.2.1', 4, 2, 1))
   AS "subquery"("string", "major", "minor", "revision");
 
 
@@ -1403,13 +1401,6 @@ CREATE TABLE "posting" (
           "initiative_id" ISNULL OR "issue_id" NOTNULL ),
         CONSTRAINT "suggestion_requires_initiative" CHECK (
           "suggestion_id" ISNULL OR "initiative_id" NOTNULL ) );
-CREATE INDEX "posting_global_idx" ON "posting" USING gist ((pstamp("author_id", "id")));
-CREATE INDEX "posting_unit_idx" ON "posting" USING gist ("unit_id", (pstamp("author_id", "id"))) WHERE "unit_id" NOTNULL;
-CREATE INDEX "posting_area_idx" ON "posting" USING gist ("area_id", (pstamp("author_id", "id"))) WHERE "area_id" NOTNULL;
-CREATE INDEX "posting_policy_idx" ON "posting" USING gist ("policy_id", (pstamp("author_id", "id"))) WHERE "policy_id" NOTNULL;
-CREATE INDEX "posting_issue_idx" ON "posting" USING gist ("issue_id", (pstamp("author_id", "id"))) WHERE "issue_id" NOTNULL;
-CREATE INDEX "posting_initiative_idx" ON "posting" USING gist ("initiative_id", (pstamp("author_id", "id"))) WHERE "initiative_id" NOTNULL;
-CREATE INDEX "posting_suggestion_idx" ON "posting" USING gist ("suggestion_id", (pstamp("author_id", "id"))) WHERE "suggestion_id" NOTNULL;
 
 COMMENT ON TABLE "posting" IS 'Text postings of members; a text posting may optionally be associated to a unit, area, policy, issue, initiative, or suggestion';
 
@@ -1420,7 +1411,6 @@ CREATE TABLE "posting_lexeme" (
         "posting_id"            INT8,
         "lexeme"                TEXT,
         "author_id"             INT4 );
-CREATE INDEX "posting_lexeme_idx" ON "posting_lexeme" USING gist ("lexeme", (pstamp("author_id", "posting_id")));
 
 COMMENT ON TABLE "posting_lexeme" IS 'Helper table to allow searches for hashtags.';
 
@@ -1773,14 +1763,6 @@ CREATE TABLE "event" (
             "text_value"      ISNULL  AND
             "old_text_value"  ISNULL )) );
 CREATE INDEX "event_occurrence_idx" ON "event" ("occurrence");
-CREATE INDEX "event_tl_global_idx" ON "event" USING gist ((pstamp("member_id", "id")));
-CREATE INDEX "event_tl_unit_idx" ON "event" USING gist ("unit_id", (pstamp("member_id", "id"))) WHERE "unit_id" NOTNULL;
-CREATE INDEX "event_tl_area_idx" ON "event" USING gist ("area_id", (pstamp("member_id", "id"))) WHERE "area_id" NOTNULL;
-CREATE INDEX "event_tl_policy_idx" ON "event" USING gist ("policy_id", (pstamp("member_id", "id"))) WHERE "policy_id" NOTNULL;
-CREATE INDEX "event_tl_issue_idx" ON "event" USING gist ("issue_id", (pstamp("member_id", "id"))) WHERE "issue_id" NOTNULL;
-CREATE INDEX "event_tl_initiative_idx" ON "event" USING gist ("initiative_id", (pstamp("member_id", "id"))) WHERE "initiative_id" NOTNULL;
-CREATE INDEX "event_tl_suggestion_idx" ON "event" USING gist ("suggestion_id", (pstamp("member_id", "id"))) WHERE "suggestion_id" NOTNULL;
-
 
 COMMENT ON TABLE "event" IS 'Event table, automatically filled by triggers';
 
