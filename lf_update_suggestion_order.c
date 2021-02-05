@@ -474,6 +474,7 @@ int main(int argc, char **argv) {
       logging = 1;
     }
     for (i=argb; i<argc; i++) len += strlen(argv[i]) + 1;
+    if (!len) len = 1;  // not needed but suppresses compiler warning
     conninfo = malloc(len * sizeof(char));
     if (!conninfo) {
       fprintf(stderr, "Error: Could not allocate memory for conninfo string.\n");
