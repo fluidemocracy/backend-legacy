@@ -3,10 +3,8 @@
 
 BEGIN;
 
-CREATE EXTENSION IF NOT EXISTS latlon;
-
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('4.2.1', 4, 2, 1))
+  SELECT * FROM (VALUES ('4.2.2', 4, 2, 2))
   AS "subquery"("string", "major", "minor", "revision");
 
 
@@ -125,7 +123,6 @@ CREATE TABLE "member" (
           CHECK ("activated" ISNULL OR "name" NOTNULL) );
 CREATE INDEX "member_authority_login_idx" ON "member" ("authority_login");
 CREATE INDEX "member_active_idx" ON "member" ("active");
-CREATE INDEX "member_location_idx" ON "member" USING gist ((GeoJSON_to_ecluster("location")));
 
 COMMENT ON TABLE "member" IS 'Users of the system, e.g. members of an organization';
 
@@ -640,7 +637,6 @@ CREATE TABLE "unit" (
 CREATE INDEX "unit_root_idx" ON "unit" ("id") WHERE "parent_id" ISNULL;
 CREATE INDEX "unit_parent_id_idx" ON "unit" ("parent_id");
 CREATE INDEX "unit_active_idx" ON "unit" ("active");
-CREATE INDEX "unit_location_idx" ON "unit" USING gist ((GeoJSON_to_ecluster("location")));
 
 COMMENT ON TABLE "unit" IS 'Organizational units organized as trees; Delegations are not inherited through these trees.';
 
@@ -679,7 +675,6 @@ CREATE TABLE "area" (
         "external_reference"    TEXT,
         "location"              JSONB );
 CREATE INDEX "area_active_idx" ON "area" ("active");
-CREATE INDEX "area_location_idx" ON "area" USING gist ((GeoJSON_to_ecluster("location")));
 
 COMMENT ON TABLE "area" IS 'Subject areas';
 
@@ -928,7 +923,6 @@ CREATE TABLE "initiative" (
         CONSTRAINT "eligible_at_first_rank_is_winner" CHECK ("eligible"=FALSE OR "rank"!=1 OR "winner"=TRUE),
         CONSTRAINT "unique_rank_per_issue" UNIQUE ("issue_id", "rank") );
 CREATE INDEX "initiative_created_idx" ON "initiative" ("created");
-CREATE INDEX "initiative_location_idx" ON "initiative" USING gist ((GeoJSON_to_ecluster("location")));
 
 COMMENT ON TABLE "initiative" IS 'Group of members publishing drafts for resolutions to be passed; Frontends must ensure that initiatives of half_frozen issues are not revoked, and that initiatives of fully_frozen or closed issues are neither revoked nor created.';
 
@@ -998,7 +992,6 @@ CREATE TABLE "draft" (
         "external_reference"    TEXT );
 CREATE INDEX "draft_created_idx" ON "draft" ("created");
 CREATE INDEX "draft_author_id_created_idx" ON "draft" ("author_id", "created");
-CREATE INDEX "draft_location_idx" ON "draft" USING gist ((GeoJSON_to_ecluster("location")));
 
 COMMENT ON TABLE "draft" IS 'Drafts of initiatives to solve issues; Frontends must ensure that new drafts for initiatives of half_frozen, fully_frozen or closed issues can''t be created.';
 
@@ -1051,7 +1044,6 @@ CREATE TABLE "suggestion" (
         "proportional_order"    INT4 );
 CREATE INDEX "suggestion_created_idx" ON "suggestion" ("created");
 CREATE INDEX "suggestion_author_id_created_idx" ON "suggestion" ("author_id", "created");
-CREATE INDEX "suggestion_location_idx" ON "suggestion" USING gist ((GeoJSON_to_ecluster("location")));
 
 COMMENT ON TABLE "suggestion" IS 'Suggestions to initiators, to change the current draft; must not be deleted explicitly, as they vanish automatically if the last opinion is deleted';
 
@@ -4865,86 +4857,6 @@ COMMENT ON FUNCTION "delegation_info"
     "member"."id"%TYPE,
     BOOLEAN )
   IS 'Notable information about a delegation chain for unit, area, or issue; See "delegation_info_type" for more information';
-
-
-
-------------------------
--- Geospatial lookups --
-------------------------
-
-/*
-CREATE FUNCTION "closed_initiatives_in_bounding_box"
-  ( "bounding_box_p" EBOX,
-    "limit_p"        INT4 )
-  RETURNS SETOF "initiative"
-  LANGUAGE 'plpgsql' STABLE AS $$
-    DECLARE
-      "limit_v" INT4;
-      "count_v" INT4;
-    BEGIN
-      "limit_v" := "limit_p" + 1;
-      LOOP
-        SELECT count(1) INTO "count_v"
-          FROM "initiative"
-          JOIN "issue" ON "issue"."id" = "initiative"."issue_id"
-          WHERE "issue"."closed" NOTNULL
-          AND GeoJSON_to_ecluster("initiative"."location") && "bounding_box_p"
-          LIMIT "limit_v";
-        IF "count_v" < "limit_v" THEN
-          RETURN QUERY SELECT "initiative".*
-            FROM (
-              SELECT
-                "initiative"."id" AS "initiative_id",
-                "issue"."closed"
-              FROM "initiative"
-              JOIN "issue" ON "issue"."id" = "initiative"."issue_id"
-              WHERE "issue"."closed" NOTNULL
-              AND GeoJSON_to_ecluster("initiative"."location") && "bounding_box_p"
-            ) AS "subquery"
-            JOIN "initiative" ON "initiative"."id" = "subquery"."initiative_id"
-            ORDER BY "subquery"."closed" DESC
-            LIMIT "limit_p";
-          RETURN;
-        END IF;
-        SELECT count(1) INTO "count_v"
-          FROM (
-            SELECT "initiative"."id" AS "initiative_id"
-            FROM "initiative"
-            JOIN "issue" ON "issue"."id" = "initiative"."issue_id"
-            WHERE "issue"."closed" NOTNULL
-            ORDER BY "closed" DESC
-            LIMIT "limit_v"
-          ) AS "subquery"
-          JOIN "initiative" ON "initiative"."id" = "subquery"."initiative_id"
-          WHERE GeoJSON_to_ecluster("initiative"."location") && "bounding_box_p"
-          LIMIT "limit_p";
-        IF "count_v" >= "limit_p" THEN
-          RETURN QUERY SELECT "initiative".*
-            FROM (
-              SELECT
-                "initiative"."id" AS "initiative_id",
-                "issue"."closed"
-              FROM "initiative"
-              JOIN "issue" ON "issue"."id" = "initiative"."issue_id"
-              WHERE "issue"."closed" NOTNULL
-              ORDER BY "closed" DESC
-              LIMIT "limit_v"
-            ) AS "subquery"
-            JOIN "initiative" ON "initiative"."id" = "subquery"."initiative_id"
-            WHERE GeoJSON_to_ecluster("initiative"."location") && "bounding_box_p"
-            ORDER BY "subquery"."closed" DESC
-            LIMIT "limit_p";
-          RETURN;
-        END IF;
-        "limit_v" := "limit_v" * 2;
-      END LOOP;
-    END;
-  $$;
-
-COMMENT ON FUNCTION "closed_initiatives_in_bounding_box"
-  ( EBOX, INT4 )
-  IS 'TODO';
-*/
 
 
 

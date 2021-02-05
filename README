@@ -1,11 +1,14 @@
 
-LiquidFeedback Core requires the pgLatLon extension to be installed.
-This extension may be obtained from:
-http://www.public-software-group.org/pgLatLon
-
 Setup the database:
 $ createdb liquid_feedback
 $ psql -v ON_ERROR_STOP=1 -f core.sql liquid_feedback
+
+Optionally add geospatial indices (if desired):
+$ psql -v ON_ERROR_STOP=1 -f geoindex_install.sql liquid_feedback
+
+Note: Geospatial indices require the pgLatLon extension to be
+installed, which may be obtained from:
+http://www.public-software-group.org/pgLatLon
 
 Optionally insert demo data:
 $ psql -v ON_ERROR_STOP=1 -f demo.sql liquid_feedback
